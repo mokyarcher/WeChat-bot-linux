@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync, renameSync, openSync, fsyncSync, closeSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, renameSync, openSync, fsyncSync, closeSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { readMessagePage } from './history.mjs';
 import { inspectOutbound } from './outbound-check.mjs';
@@ -187,6 +187,11 @@ export function installBridge(BridgeClient, settings) {
   };
   return {
     roomId, status,
+    requestCapacity() {
+      const completed = [...requests.values()].filter(r => r.completed).length;
+      return { total: requests.size, completed, unresolved: requests.size - completed,
+        bytes: requestFile && existsSync(requestFile) ? statSync(requestFile).size : 0 };
+    },
     inspectOutbound(requestIds) {
       return inspectOutbound(path => api(path, undefined, 'GET', AbortSignal.timeout(5000)), settings.chatId, requestIds, requests);
     },

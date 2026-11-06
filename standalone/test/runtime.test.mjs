@@ -156,6 +156,9 @@ test('original persona and memory survive standalone startup and restart', { tim
   const restored = await api('/wechat-bot/api/action', { op: 'memory.list', args: { room: 'bowxt:1@chatroom' } });
   assert.ok(restored.result.facts.some(fact => fact.text.includes('不喝咖啡')));
   await api('/runtime/enable', { enabled: true });
+  const capacity = await api('/runtime/storage');
+  assert.equal(capacity.turns.eligible, 0);
+  await assert.rejects(api('/runtime/storage/compact', { confirm: true, previewHash: capacity.turns.previewHash }));
   const manualArgs = { room: 'bowxt:1@chatroom', text: '手动发送模拟验证', requestId: '11111111-1111-4111-8111-111111111111' };
   const sentManual = await api('/wechat-bot/api/action', { op: 'sendText', args: manualArgs });
   assert.equal(sentManual.result.rc, 0);

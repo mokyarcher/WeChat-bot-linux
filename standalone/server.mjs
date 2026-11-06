@@ -107,6 +107,20 @@ const server = http.createServer(async (req, res) => {
   try {
     if (ctx.connection.requestRejection(req)) return json(res, 403, { error: '拒绝跨站访问' });
     const path = new URL(req.url, 'http://localhost').pathname;
+    if (path === '/runtime/storage' && req.method === 'GET') {
+      const { ids, ...turns } = lifecycle.capacity();
+      const sends = bridge.requestCapacity();
+      return json(res, 200, { turns, sends, attention: turns.activeRecords >= 10000 || turns.bytes >= 50 * 1048576 || sends.total >= 10000 });
+    }
+    if (path === '/runtime/storage/compact' && req.method === 'POST') {
+      const input = await readJson(req);
+      if (roomMaintenance || personaWriteBusy || memoryWriteBusy) return json(res, 409, { error: '请等待其他维护或编辑完成' });
+      roomMaintenance = true;
+      try {
+        if (!await waitForSafePause()) return json(res, 409, { error: '请先暂停并等待业务与微信空闲' });
+        return json(res, 200, lifecycle.compact(input));
+      } finally { roomMaintenance = false; }
+    }
     if (path === '/runtime/turns' && req.method === 'GET') return json(res, 200, { summary: lifecycle.summary(), items: lifecycle.list() });
     if (path === '/runtime/turns/resume' && req.method === 'POST') {
       const input = await readJson(req);
