@@ -317,22 +317,22 @@ const fmtTokens = (v) => {
 };
 
 const NAV = [
-  {id:'overview', title:'总览', icon:'📊'},
+  {id:'overview', title:'运行总览', icon:'📊'},
   {id:'features', title:'功能开关', icon:'🎛'},
   {id:'reply', title:'回复节奏', icon:'💬', groups:['reply']},
   {id:'proactive', title:'主动行为', icon:'🌱', groups:['proactive']},
   {id:'style', title:'说话方式', icon:'🗣', groups:['style']},
-  {id:'sticker', title:'表情包', icon:'😄', groups:['sticker'], special:'stickers'},
-  {id:'senses', title:'感知', icon:'🖼', groups:['vision','link','douyin']},
-  {id:'voice', title:'语音', icon:'🎙', groups:['voiceIn','voiceOut'], special:'voice'},
-  {id:'memory', title:'记忆', icon:'🧠', groups:['memory'], special:'memory'},
-  {id:'inner', title:'内心', icon:'💭', groups:['persona'], special:'inner'},   // ★ 性格：心情/好恶/目标/日记/自传
-  {id:'astro', title:'星盘', icon:'🌌'},   // ★ 人际关系 × 记忆关联 × 性格
-  {id:'identity', title:'群与人', icon:'👥', groups:['identity'], special:'members'},
-  {id:'moment', title:'朋友圈', icon:'📸', groups:['moment'], special:'moment'},
+  {id:'sticker', title:'表情图库', icon:'😄', groups:['sticker'], special:'stickers'},
+  {id:'senses', title:'多模感知', icon:'🖼', groups:['vision','link','douyin']},
+  {id:'voice', title:'语音交互', icon:'🎙', groups:['voiceIn','voiceOut'], special:'voice'},
+  {id:'memory', title:'记忆空间', icon:'🧠', groups:['memory'], special:'memory'},
+  {id:'inner', title:'内心世界', icon:'💭', groups:['persona'], special:'inner'},   // ★ 性格：心情/好恶/目标/日记/自传
+  {id:'astro', title:'关系星盘', icon:'🌌'},   // ★ 人际关系 × 记忆关联 × 性格
+  {id:'identity', title:'群友管理', icon:'👥', groups:['identity'], special:'members'},
+  {id:'moment', title:'好友动态', icon:'📸', groups:['moment'], special:'moment'},
   {id:'model', title:'人设模型', icon:'🐟', groups:['model'], special:'model'},
-  {id:'diag', title:'诊断', icon:'🔬', special:'diag'},
-  {id:'update', title:'更新', icon:'📦', special:'update'},
+  {id:'diag', title:'系统诊断', icon:'🔬', special:'diag'},
+  {id:'update', title:'版本更新', icon:'📦', special:'update'},
   {id:'ops', title:'运维日志', icon:'🩺', groups:['health','selfheal','advanced'], special:'ops'},
   {id:'manual', title:'手动操作', icon:'🕹'},
 ];
@@ -685,7 +685,7 @@ function renderOverview() {
   feed.sort((a,b) => (b.ts||0)-(a.ts||0) || (b.seq||0)-(a.seq||0));
 
   view.innerHTML = `
-    <h2>总览 <span class="muted small">${esc(ago(S.at))}更新</span></h2>
+    <h2>运行总览 <span class="muted small">${esc(ago(S.at))}更新</span></h2>
     <div class="grid">
       <div class="card"><div class="t">📥 收到 / 回复</div><div class="k">${stats.msgIn||0} <span class="muted" style="font-size:13px">/ ${stats.replied||0}</span></div>
         <div class="d">跳过 ${stats.skipped||0} · LLM ${stats.llmCalls||0}（失败 ${stats.llmErrors||0}）</div></div>
@@ -1311,7 +1311,7 @@ function roomFrom(sel) {
 /* ── 记忆 ─────────────────────────────────────────────── */
 /* ── 内心（性格四件套：心情/精力/亲密度 + 好恶 + 私人目标 + 自我叙事）── */
 async function renderInner() {
-  view.innerHTML = `<h2>内心 <span class="muted small">她是一个人：心情 / 好恶 / 想要什么 / 自传 / 日记 —— 所有群通用</span></h2>
+  view.innerHTML = `<h2>内心世界 <span class="muted small">她是一个人：心情 / 好恶 / 想要什么 / 自传 / 日记 —— 所有群通用</span></h2>
     <div class="row">
       <span class="pill">${App.S.platform === 'linux' ? '当前监听群 · 人格编辑前自动备份' : '全局 · 不分群'}</span>
       <button class="btn" id="inner-load">刷新</button>
@@ -2355,7 +2355,7 @@ function renderOpsExtra() {
 }
 
 async function renderLinuxOps() {
-  view.innerHTML = `<h2>Linux 运维日志</h2><p class="muted">状态查询不执行自动重启、不发送消息、不调用模型；核查结束操作只记录处理结果。桌面探测不能证明手机已绑定或屏幕内容正常。</p><button class="btn primary" id="linux-ops-refresh">刷新诊断</button><a href="/desktop/" target="_blank" rel="noopener">远程桌面</a><div id="linux-ops-health" class="section">读取中…</div><div class="section"><div class="hd">最近一次发送分段耗时</div><p id="linux-ops-timing" class="mono" style="white-space:pre-wrap"></p><p class="muted">这里只统计接入侧最近一次发送，可能是历史结果；不包含收到消息、防抖及模型生成的完整耗时。服务重启后可能为空。</p></div><div class="section"><div class="hd">业务日志</div><button class="btn" id="linux-ops-log">读取最近 200 行</button><p class="muted">日志可能含群聊内容，请勿公开分享。认证和容器系统日志暂不在此读取。</p><pre id="linux-ops-logtext" style="white-space:pre-wrap;max-height:500px;overflow:auto"></pre></div>`;
+  view.innerHTML = `<h2>运维日志</h2><p class="muted">状态查询不执行自动重启、不发送消息、不调用模型；核查结束操作只记录处理结果。桌面探测不能证明手机已绑定或屏幕内容正常。</p><button class="btn primary" id="linux-ops-refresh">刷新诊断</button><a href="/desktop/" target="_blank" rel="noopener">远程桌面</a><div id="linux-ops-health" class="section">读取中…</div><div class="section"><div class="hd">最近一次发送分段耗时</div><p id="linux-ops-timing" class="mono" style="white-space:pre-wrap"></p><p class="muted">这里只统计接入侧最近一次发送，可能是历史结果；不包含收到消息、防抖及模型生成的完整耗时。服务重启后可能为空。</p></div><div class="section"><div class="hd">业务日志</div><button class="btn" id="linux-ops-log">读取最近 200 行</button><p class="muted">日志可能含群聊内容，请勿公开分享。认证和容器系统日志暂不在此读取。</p><pre id="linux-ops-logtext" style="white-space:pre-wrap;max-height:500px;overflow:auto"></pre></div>`;
   const turnBox = document.createElement('div'); turnBox.className = 'section'; view.appendChild(turnBox);
   const storageBox = document.createElement('div'); storageBox.className = 'section'; view.appendChild(storageBox);
   const refreshStorage = async () => {
@@ -2526,7 +2526,7 @@ function renderUpdate() {
   for (const c of remoteCands) if (cmpV(c, remoteV) > 0) remoteV = c;
   const staleHint = localV && remoteV && cmpV(remoteV, localV) < 0
     ? ' <span class="small muted">（CDN 缓存滞后，实际不旧于本地）</span>' : '';
-  view.innerHTML = `<h2>更新 <span class="muted small">从 GitHub 拉最新代码</span></h2>
+  view.innerHTML = `<h2>版本更新 <span class="muted small">从 GitHub 拉最新代码</span></h2>
 
     <div class="section"><div class="hd">📦 版本</div>
       <table class="table"><tbody>
@@ -2786,7 +2786,7 @@ async function renderMomentExtra() {
 
 function renderDiag() {
   if (App.S.platform === 'linux') {
-    view.innerHTML = `<h2>Linux 诊断</h2><p class="muted">只读检查，不发群消息、不调用模型、不自动重启微信。客户端连接不能单独证明账号已登录。</p><div class="row"><button class="btn primary" id="linux-check">重新检测</button><a href="/" target="_blank" rel="noopener">模型与启停设置</a><a href="/desktop/" target="_blank" rel="noopener">远程桌面</a></div><div id="linux-health" class="section">${renderHealthItems(App.S.health)}</div><p class="muted">网页桌面有独立登录与手机二次验证。此处不判断本机备用 SSH 隧道状态；没有新消息不等于扫描停止。遇到群名错误或输入锁，请先查看远程桌面，不要绕过输入保护。</p>`;
+    view.innerHTML = `<h2>系统诊断</h2><p class="muted">只读检查，不发群消息、不调用模型、不自动重启微信。客户端连接不能单独证明账号已登录。</p><div class="row"><button class="btn primary" id="linux-check">重新检测</button><a href="/" target="_blank" rel="noopener">模型与启停设置</a><a href="/desktop/" target="_blank" rel="noopener">远程桌面</a></div><div id="linux-health" class="section">${renderHealthItems(App.S.health)}</div><p class="muted">网页桌面有独立登录与手机二次验证。此处不判断本机备用 SSH 隧道状态；没有新消息不等于扫描停止。遇到群名错误或输入锁，请先查看远程桌面，不要绕过输入保护。</p>`;
     $('#linux-check').onclick = async () => {
       const button = $('#linux-check'); button.disabled = true; button.textContent = '检测中…';
       try {
@@ -2799,7 +2799,7 @@ function renderDiag() {
     };
     return;
   }
-  view.innerHTML = `<h2>诊断 <span class="muted small">环境与链路体检</span></h2>
+  view.innerHTML = `<h2>系统诊断 <span class="muted small">环境与链路体检</span></h2>
     <div class="row" style="margin-bottom:10px">
       <button class="btn primary" id="diag-refresh">重新检测</button>
       <button class="btn" id="diag-poll">恢复轮询</button>
@@ -3073,7 +3073,7 @@ function astroNebula(traits) {
 }
 
 function renderAstro() {
-  view.innerHTML = `<h2>星盘 <span class="muted small">人际星盘 · 谁离她近、谁聊得多、什么快忘了</span></h2>
+  view.innerHTML = `<h2>关系星盘 <span class="muted small">人际星盘 · 谁离她近、谁聊得多、什么快忘了</span></h2>
     <div style="position:relative;border-radius:16px;overflow:hidden;border:1px solid #14203a;background:#02040a;
                 box-shadow:0 30px 80px -40px #000, 0 0 0 1px rgba(80,120,200,.06) inset">
       <canvas id="astro-canvas" style="display:block;width:100%;height:min(80vh,820px);cursor:grab"></canvas>
@@ -4060,7 +4060,7 @@ function renderManual() {
 async function renderLinuxManual() {
   const bindingResponse = await fetch('/runtime/room');
   const binding = await bindingResponse.json();
-  view.innerHTML = `<h2>手动操作 · Linux</h2><div class="section"><div class="hd">发送纯文字到 ${esc(binding.name)}</div><p class="muted">仅当前监听群。总回复开关和接入都需启用；沿用目标窗口、草稿与发送回显检查。这里不支持语音、图片或真实 @。</p><textarea id="linux-send-text" maxlength="2000" rows="4" style="width:100%" placeholder="最多 2000 字"></textarea><button class="btn primary" id="linux-send">确认并发送文字</button><p id="linux-send-result" class="muted"></p></div><div class="section"><div class="hd">已记录消息查询</div><p class="muted">仅 bowxt 已记录消息，不是微信全部历史。时间为首次接收时间。搜索按页匹配，每页扫描 50 条；本页没有匹配不代表全部历史没有。</p><input id="linux-history-query" maxlength="200" placeholder="关键词留空看全部文字"><button class="btn" id="linux-history-search">从最近开始查询</button><button class="btn" id="linux-history-more" disabled>加载更早一页</button><p id="linux-history-state" class="muted"></p><div id="linux-history-results"></div></div>`;
+  view.innerHTML = `<h2>手动操作</h2><div class="section"><div class="hd">发送纯文字到 ${esc(binding.name)}</div><p class="muted">仅当前监听群。总回复开关和接入都需启用；沿用目标窗口、草稿与发送回显检查。这里不支持语音、图片或真实 @。</p><textarea id="linux-send-text" maxlength="2000" rows="4" style="width:100%" placeholder="最多 2000 字"></textarea><button class="btn primary" id="linux-send">确认并发送文字</button><p id="linux-send-result" class="muted"></p></div><div class="section"><div class="hd">已记录消息查询</div><p class="muted">仅 bowxt 已记录消息，不是微信全部历史。时间为首次接收时间。搜索按页匹配，每页扫描 50 条；本页没有匹配不代表全部历史没有。</p><input id="linux-history-query" maxlength="200" placeholder="关键词留空看全部文字"><button class="btn" id="linux-history-search">从最近开始查询</button><button class="btn" id="linux-history-more" disabled>加载更早一页</button><p id="linux-history-state" class="muted"></p><div id="linux-history-results"></div></div>`;
   let requestId, lastText, nextBefore, query = '', rows = [];
   let since, until;
   $('#linux-history-query').insertAdjacentHTML('beforebegin', '<div class="row"><label>开始日期（北京时间）<input id="linux-history-from" type="date"></label><label>结束日期（含当天）<input id="linux-history-to" type="date"></label></div><p class="muted" id="linux-history-filter">当前筛选：全部日期。修改条件后点“从最近开始查询”；日期和关键词都按页匹配。</p>');
