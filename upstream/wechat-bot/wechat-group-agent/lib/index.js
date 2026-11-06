@@ -1346,7 +1346,7 @@ const namesFile = join(dirname(memoryDir), 'members.json')
         lastRepliedAt: r.lastRepliedAt || 0, lastRepliedSender: r.lastRepliedSender || '',
       }, null, 1))
       r.dirty = 0
-    } catch (e) { log('记忆落盘失败 ' + String(e?.message || e)) }
+    } catch (e) { ctx.standaloneLifecycle?.fail('memory_write_failed'); log('记忆落盘失败 ' + String(e?.message || e)) }
   }
 
     /**
@@ -1577,7 +1577,7 @@ const namesFile = join(dirname(memoryDir), 'members.json')
         log('表情包抓取未命中 ' + JSON.stringify(evt))
         break
       case 'msg':
-        void handleMsg(evt.m).catch((e) => log('消息处理异常：' + String(e?.message || e)))
+        void (ctx.standaloneLifecycle ? ctx.standaloneLifecycle.ingest(evt.m, handleMsg) : handleMsg(evt.m)).catch((e) => log('消息处理异常：' + String(e?.message || e)))
         break
       default:
         break
@@ -1784,6 +1784,7 @@ const namesFile = join(dirname(memoryDir), 'members.json')
     if (m.typeName === 'sys') return
 
     // 合并连发：2.2s 内的多条消息一起评估，避免"每条都回"
+    ctx.standaloneLifecycle?.queued(m)
     r.pending.push(m)
     if (!r.timer) {
       r.timer = track(setTimeout(() => {
@@ -1818,6 +1819,7 @@ const namesFile = join(dirname(memoryDir), 'members.json')
   function getOutbox() {
     if (outbox) return outbox
     outbox = OB.createOutbox({
+      prepare: ctx.standaloneLifecycle ? (kind, args) => kind === 'sendText' ? { ...args, requestId: args.requestId || ctx.standaloneLifecycle.outboundId() } : args : undefined,
       send: (kind, args) => client.call(kind, args, kind === 'sayVoice' ? 150_000 : 30_000),
       log,
       cfg: {
@@ -2100,7 +2102,13 @@ const namesFile = join(dirname(memoryDir), 'members.json')
   }
 
   /** 定期从最近的群聊里提炼长期事实（每群独立；攒够 8 条新消息才提炼一次） */
-  async function extractFacts(r, { force = false } = {}) {
+  function extractFacts(r, options = {}) {
+    return ctx.standaloneLifecycle
+      ? ctx.standaloneLifecycle.task(() => extractFactsCore(r, options))
+      : extractFactsCore(r, options)
+  }
+
+  async function extractFactsCore(r, { force = false } = {}) {
     if (!config.memoryExtract) return 0
     if (!force) {
       if (Date.now() - (r.factsExtractedAt || 0) < 10 * 60_000) return 0
@@ -2178,6 +2186,7 @@ let res = await callLlm(route, sys, usr, undefined)
       if (n) log(`「${r.roomName}」长期记忆提炼：新增 ${n} 条（共 ${r.facts.length} 条）`)
       return n
     } catch (e) {
+      ctx.standaloneLifecycle?.fail('memory_extract_failed')
       log('长期记忆提炼失败：' + String(e?.message || e))
       return 0
     }
@@ -3403,6 +3412,14 @@ ${cur.text}`
 
   // ── 决策 ────────────────────────────────────────────────────
   async function evaluate(r, batch) {
+    if (ctx.standaloneLifecycle) return ctx.standaloneLifecycle.batch(batch, async () => {
+      await evaluateCore(r, batch)
+      saveMemory(r)
+    })
+    return evaluateCore(r, batch)
+  }
+
+  async function evaluateCore(r, batch) {
     if (stopped) return
     const trigger = batch[batch.length - 1]
     // 能回的类型：文本 / 应用卡片 / 链接卡片（type 42/49：链接视频失败时降级成普通文本）/
@@ -3429,6 +3446,7 @@ ${cur.text}`
         })
         if (sd.silent) {
           stats.skipped++
+          ctx.standaloneLifecycle?.skip('silence')
           log('沉默（' + sd.reason + '）→ 这条不回')
           return
         }
@@ -3461,6 +3479,7 @@ ${cur.text}`
       // 只有硬性原因才真跳过：频率上限 / 冷却中 / 刚连续自言自语 / 低信息量 / 重复
       const hardBlock = /上限|冷却|连续发言|低信息|太短|重复|刷屏/.test(String(d.reason || ''))
       if (hardBlock) {
+        ctx.standaloneLifecycle?.skip('policy_blocked')
         stats.skipped++
         log(`不回（${d.reason}）｜${r.roomName}｜${trigger.senderName}: ${trigger.text}`)
         return
@@ -3491,7 +3510,7 @@ ${cur.text}`
     if (priority !== 'continuation' && Math.random() < config.cannedChance) {
       const text = pickCanned(priority)
       log(`敷衍模式 → ${JSON.stringify(text)}`)
-      try { await deliver(r, trigger, priority, { text, stickerOnly: false }) } catch (e) { log('投递异常：' + String(e?.message || e)) }
+      try { await deliver(r, trigger, priority, { text, stickerOnly: false }) } catch (e) { ctx.standaloneLifecycle?.fail('delivery_failed'); log('投递异常：' + String(e?.message || e)) }
       return
     }
 
@@ -3499,19 +3518,22 @@ ${cur.text}`
     // 桌宠：开始动脑子想怎么回 → 思考动作（force：强信号，不受限频影响）
     void pet.anim(config.petSyncAnimOnThinking, { force: true })
     try {
+      ctx.standaloneLifecycle?.phase('generating')
       reply = await generateReply(r, batch, trigger, priority)
     } catch (e) {
       stats.llmErrors++
+      ctx.standaloneLifecycle?.fail('generation_failed')
       log('生成失败：' + String(e?.message || e))
       // 桌宠：想不出来 / 调用失败 → 垂头叹气
       void pet.anim(config.petSyncAnimOnError, { force: true })
       return
     }
     if (!reply?.text && !reply?.stickerOnly) {
+      ctx.standaloneLifecycle?.skip('no_reply')
       log('模型没给出可用回复，放弃')
       return
     }
-    try { await deliver(r, trigger, priority, reply) } catch (e) { log('投递异常：' + String(e?.message || e)) }
+    try { await deliver(r, trigger, priority, reply) } catch (e) { ctx.standaloneLifecycle?.fail('delivery_failed'); log('投递异常：' + String(e?.message || e)) }
   }
 
   // ── 生成 ────────────────────────────────────────────────────
@@ -4811,6 +4833,7 @@ ${cur.text}`
       diag = retry.diag
     }
 
+    if (!text.trim() && (diag.err || diag.failure)) ctx.standaloneLifecycle?.fail('model_failed')
     let cleaned = cleanReply(text, { maxLen: config.maxReplyChars, maxLines: 0 })
     // ②⑥ 标点规约（按当前情绪档）：句号多、感叹号少
     try {
@@ -5571,6 +5594,7 @@ ${cur.text}`
             text: mm.text,
           })
           if (mm.mentions.length) log(`真 @：${mm.mentions.length} 人 → atlist（${mm.mentions.join(',')}）`)
+          ctx.standaloneLifecycle?.sent()
           stats.sentText++
           ;(r.sentTexts ||= []).push({ text: mm.text, at: Date.now() })
           if (r.sentTexts.length > 40) r.sentTexts = r.sentTexts.slice(-40)
@@ -5596,6 +5620,7 @@ ${cur.text}`
             }
           } catch { }
         } catch (e) {
+          ctx.standaloneLifecycle?.fail('send_unconfirmed')
           log('发送失败：' + String(e?.message || e))
           return
         }

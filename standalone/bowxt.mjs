@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, renameSync, openSync, fsyncSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
 import { readMessagePage } from './history.mjs';
 
@@ -30,8 +30,13 @@ export function installBridge(BridgeClient, settings) {
   const requests = new Map(requestFile && existsSync(requestFile) ? JSON.parse(readFileSync(requestFile, 'utf8')) : []);
   function saveRequests() {
     if (!requestFile) return;
-    writeFileSync(requestFile + '.tmp', JSON.stringify([...requests]), { mode: 0o600 });
+    const fd = openSync(requestFile + '.tmp', 'w', 0o600);
+    try { writeFileSync(fd, JSON.stringify([...requests])); fsyncSync(fd); } finally { closeSync(fd); }
     renameSync(requestFile + '.tmp', requestFile);
+    if (process.platform !== 'win32') {
+      const dirFd = openSync(settings.dataDir, 'r');
+      try { fsyncSync(dirFd); } finally { closeSync(dirFd); }
+    }
   }
   let polling = false;
   let backendConnected = null;
@@ -49,7 +54,7 @@ export function installBridge(BridgeClient, settings) {
     return response.json();
   }
   const status = () => ({ loggedIn: backendConnected, self: 'linux-bot', mock: false, counters,
-    stickers: { count: 0 }, polling, identityScope: 'group-display-name' });
+    stickers: { count: 0 }, polling, identityScope: 'group-display-name', turns: settings.lifecycle?.summary() });
   async function tick(epoch) {
     if (!polling || epoch !== generation) return;
     if (!clients.size) { timer = setTimeout(() => void tick(epoch), 250); return; }
@@ -69,15 +74,22 @@ export function installBridge(BridgeClient, settings) {
         const message = delivery.message;
         // Refuse unexpected rooms even if the backend ignores the subscription filter.
         if (message.chat_id !== settings.chatId) throw new Error('接入服务返回了非白名单群消息');
+        const normalized = normalizeMessage(message, settings.chatId, settings.roomName);
         if (message.message_type === 'text') {
-          const normalized = normalizeMessage(message, settings.chatId, settings.roomName);
-          counters.msgsIn++;
-          for (const client of clients) client.onEvent({ t: 'msg', m: normalized });
+          // Durable receipt precedes both dispatch and ACK. A repeated claim is ACKed,
+          // but never starts a second business task (including after a restart).
+          if (!settings.lifecycle || settings.lifecycle.receive(normalized)) {
+            counters.msgsIn++;
+            for (const client of clients) client.onEvent({ t: 'msg', m: normalized });
+          }
+        } else if (settings.lifecycle?.receive({ ...normalized, type: 0, typeName: message.message_type })) {
+          settings.lifecycle.ignore(normalized, 'unsupported_type');
         }
         await api(`/api/agents/${activeConsumer}/deliveries/${message.seq}/ack`, { lease_token: delivery.lease_token }, 'POST', controller.signal);
       }
     } catch (error) {
       failed = true;
+      if (settings.lifecycle?.summary().fault) { polling = false; generation++; }
       if (!controller.signal.aborted) settings.log('接入轮询：' + error.message);
     } finally {
       if (claimAbort === controller) claimAbort = undefined;
@@ -129,31 +141,46 @@ export function installBridge(BridgeClient, settings) {
       return op === 'history' ? selected : { items: selected.reverse() };
     }
     if (op === 'sendText') {
-      if (!polling) throw new Error('自动发送尚未启用');
-      if (!args.text?.trim()) throw new Error('回复正文为空');
-      // Stable idempotency key protects retries after HTTP response loss.
-      const signature = createHash('sha256').update(roomId + '\0' + args.text + (args.requestId ? '\0' + args.requestId : '')).digest('hex');
-      let request = requests.get(signature);
-      if (!request || (!args.requestId && request.completed && Date.now() - request.createdAt > 60000)) {
-        for (const [key, previous] of requests) {
-          if (!previous.manual && previous.completed && Date.now() - previous.createdAt > 60000) requests.delete(key);
+      try {
+        if (settings.lifecycle?.summary().fault) throw new Error('轮次存储异常，拒绝发送');
+        if (!polling) throw new Error('自动发送尚未启用');
+        if (!args.text?.trim()) throw new Error('回复正文为空');
+        if (args.requestId && [...requests.values()].some(request => request.requestId === args.requestId
+          && request.textHash !== createHash('sha256').update(args.text).digest('hex'))) throw new Error('同一发送标识不能用于不同正文');
+        // Stable idempotency key protects retries after HTTP response loss.
+        const signature = createHash('sha256').update(roomId + '\0' + args.text + (args.requestId ? '\0' + args.requestId : '')).digest('hex');
+        let request = requests.get(signature);
+        if (!request || (!args.requestId && request.completed && Date.now() - request.createdAt > 60000)) {
+          for (const [key, previous] of requests) {
+            if (!previous.manual && !previous.stable && previous.completed && Date.now() - previous.createdAt > 60000) requests.delete(key);
+          }
+          request = { clientId: randomUUID(), createdAt: Date.now(), completed: false, manual: !!args.requestId && !/^(turn|operation):/.test(args.requestId), stable: !!args.requestId, requestId: args.requestId,
+            textHash: createHash('sha256').update(args.text).digest('hex') };
+          requests.set(signature, request);
+          try { saveRequests(); } catch { requests.delete(signature); throw new Error('发送记录保存失败，消息未提交'); }
         }
-        request = { clientId: randomUUID(), createdAt: Date.now(), completed: false, manual: !!args.requestId };
-        requests.set(signature, request);
+        if (request.completed) return { rc: 0, verified: true, deduped: true };
+        const queued = request.seq ? await api(`/api/messages/${request.seq}`)
+          : await api(`/api/chats/${settings.chatId}/messages`, { text: args.text, client_id: request.clientId });
+        let message = queued.message;
+        request.seq = message.seq;
         saveRequests();
+        const deadline = Date.now() + 25000;
+        while (message.delivery_status === 'pending' && Date.now() < deadline) {
+          await new Promise(resolve => setTimeout(resolve, 700));
+          message = (await api(`/api/messages/${message.seq}`)).message;
+        }
+        if (message.delivery_status !== 'sent') throw new Error('发送状态待核查：' + message.delivery_status);
+        request.completed = true;
+        saveRequests();
+        counters.msgsOut++;
+        return { rc: 0, verified: true };
+      } catch (error) {
+        // A transport error can mean the UI already sent the message. Keep the
+        // durable key for explicit verification, but stop automatic outbox retries.
+        error.retryable = false;
+        throw error;
       }
-      const queued = await api(`/api/chats/${settings.chatId}/messages`, { text: args.text, client_id: request.clientId });
-      let message = queued.message;
-      const deadline = Date.now() + 25000;
-      while (message.delivery_status === 'pending' && Date.now() < deadline) {
-        await new Promise(resolve => setTimeout(resolve, 700));
-        message = (await api(`/api/messages/${message.seq}`)).message;
-      }
-      if (message.delivery_status !== 'sent') throw new Error('发送状态待核查：' + message.delivery_status);
-      request.completed = true;
-      saveRequests();
-      counters.msgsOut++;
-      return { rc: 0, verified: true };
     }
     throw new Error('Linux 首期尚未支持操作：' + op);
   };

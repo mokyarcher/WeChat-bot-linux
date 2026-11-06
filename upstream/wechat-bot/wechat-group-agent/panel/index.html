@@ -2353,7 +2353,34 @@ function renderOpsExtra() {
 }
 
 async function renderLinuxOps() {
-  view.innerHTML = `<h2>Linux 运维日志</h2><p class="muted">只读查询；不执行自动重启、不发送消息、不调用模型。桌面探测不能证明手机已绑定或屏幕内容正常。</p><button class="btn primary" id="linux-ops-refresh">刷新诊断</button><a href="/desktop/" target="_blank" rel="noopener">远程桌面</a><div id="linux-ops-health" class="section">读取中…</div><div class="section"><div class="hd">最近一次发送分段耗时</div><p id="linux-ops-timing" class="mono" style="white-space:pre-wrap"></p><p class="muted">这里只统计接入侧最近一次发送，可能是历史结果；不包含收到消息、防抖及模型生成的完整耗时。服务重启后可能为空。</p></div><div class="section"><div class="hd">业务日志</div><button class="btn" id="linux-ops-log">读取最近 200 行</button><p class="muted">日志可能含群聊内容，请勿公开分享。认证和容器系统日志暂不在此读取。</p><pre id="linux-ops-logtext" style="white-space:pre-wrap;max-height:500px;overflow:auto"></pre></div>`;
+  view.innerHTML = `<h2>Linux 运维日志</h2><p class="muted">状态查询不执行自动重启、不发送消息、不调用模型；核查结束操作只记录处理结果。桌面探测不能证明手机已绑定或屏幕内容正常。</p><button class="btn primary" id="linux-ops-refresh">刷新诊断</button><a href="/desktop/" target="_blank" rel="noopener">远程桌面</a><div id="linux-ops-health" class="section">读取中…</div><div class="section"><div class="hd">最近一次发送分段耗时</div><p id="linux-ops-timing" class="mono" style="white-space:pre-wrap"></p><p class="muted">这里只统计接入侧最近一次发送，可能是历史结果；不包含收到消息、防抖及模型生成的完整耗时。服务重启后可能为空。</p></div><div class="section"><div class="hd">业务日志</div><button class="btn" id="linux-ops-log">读取最近 200 行</button><p class="muted">日志可能含群聊内容，请勿公开分享。认证和容器系统日志暂不在此读取。</p><pre id="linux-ops-logtext" style="white-space:pre-wrap;max-height:500px;overflow:auto"></pre></div>`;
+  const turnBox = document.createElement('div'); turnBox.className = 'section'; view.appendChild(turnBox);
+  const refreshTurns = async () => {
+    const response = await fetch('/runtime/turns'); const result = await response.json();
+    if (!response.ok) throw new Error(result.error || '轮次读取失败');
+    if (!turnBox.isConnected) return;
+    turnBox.replaceChildren();
+    const title = document.createElement('div'); title.className = 'hd'; title.textContent = '待核查轮次'; turnBox.appendChild(title);
+    const note = document.createElement('p'); note.className = 'muted';
+    note.textContent = '处理中/待处理 ' + result.summary.pending + ' 条；待核查 ' + result.summary.needsReview + ' 条。最多显示最近 100 条。异常退出或发送未确认的轮次不会自动重放。请先查看微信历史和业务日志；如需补发，由你决定并手动发送。';
+    turnBox.appendChild(note);
+    const labels = { interrupted: '进程中断', processing_failed: '业务处理未完成', ingest_failed: '消息接收处理失败', generation_failed: '回复生成失败', model_failed: '模型调用失败', delivery_failed: '回复投递失败', send_unconfirmed: '发送结果未确认', memory_write_failed: '记忆保存失败', decision: '回复判断', debounce: '等待合并', generating: '生成回复', send_confirmed: '已确认部分发送', finished: '处理已结束' };
+    for (const item of result.items) {
+      const row = document.createElement('div'); row.className = 'row';
+      const text = document.createElement('span'); text.textContent = item.id + ' · ' + new Date(item.receivedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) + ' · ' + (labels[item.failureStage || item.phase] || labels[item.reason] || '需人工核查');
+      const button = document.createElement('button'); button.className = 'btn'; button.textContent = '核查后结束';
+      button.onclick = async () => {
+        if (!confirm('请先暂停机器人，并核对微信历史和业务日志。确认结束该轮次？此操作不会重发消息，也不会重新生成回复或恢复记忆。')) return;
+        button.disabled = true;
+        try {
+          const r = await fetch('/runtime/turns/resolve', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: item.id, updatedAt: item.updatedAt, confirm: true }) });
+          const data = await r.json(); if (!r.ok) throw new Error(data.error || '结束轮次失败');
+          await refresh();
+        } catch (error) { if (row.isConnected) { text.textContent = '操作失败：' + error.message; button.disabled = false; } }
+      };
+      row.append(text, button); turnBox.appendChild(row);
+    }
+  };
   const refresh = async () => {
     const button = $('#linux-ops-refresh'); button.disabled = true;
     try {
@@ -2365,6 +2392,7 @@ async function renderLinuxOps() {
       const timing = data.backend?.last_send_timings;
       const labels = { queue_wait_s: '排队', open_chat_s: '定位会话', input_to_enter_s: '输入到按回车', verify_s: '回显确认', total_s: 'UI 总计', end_to_end_s: '含排队总计' };
       $('#linux-ops-timing').textContent = timing ? Object.entries(labels).filter(([key]) => Number.isFinite(timing[key])).map(([key, label]) => label + '：' + timing[key].toFixed(3) + ' 秒').join('\n') : '暂无已记录发送耗时。';
+      await refreshTurns();
       renderHeader();
     } catch (e) { if ($('#linux-ops-health')) $('#linux-ops-health').textContent = '诊断失败：' + e.message; }
     finally { if (button.isConnected) button.disabled = false; }

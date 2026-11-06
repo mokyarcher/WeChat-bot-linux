@@ -8,6 +8,7 @@ import { buildLinuxHealth } from './health.mjs';
 import { createServiceHealth } from './service-health.mjs';
 import { createPersonaBackups } from './persona-backups.mjs';
 import { createMemoryBackups } from './memory-backups.mjs';
+import { createTurnJournal } from './turns.mjs';
 import { MODEL_PRESETS, findPreset, resolveModelConfig } from './presets.mjs';
 
 const root = resolve(process.env.BOT_ROOT || '..');
@@ -19,9 +20,10 @@ let model = existsSync(modelFile) ? JSON.parse(readFileSync(modelFile, 'utf8')) 
 const pluginDir = join(root, 'upstream/wechat-bot/wechat-group-agent/lib');
 const { BridgeClient } = await import(pathToFileURL(join(pluginDir, 'bridge-client.mjs')));
 const log = message => console.log(new Date().toISOString(), message);
+const lifecycle = createTurnJournal(data, `bowxt:${Number(process.env.BOWXT_CHAT_ID || 1)}@chatroom`);
 const bridge = installBridge(BridgeClient, {
   baseUrl: process.env.BOWXT_URL || 'http://127.0.0.1:8787',
-  chatId: Number(process.env.BOWXT_CHAT_ID || 1), roomName: process.env.BOWXT_CHAT_NAME || '小鲸鱼调教', dataDir: data, log,
+  chatId: Number(process.env.BOWXT_CHAT_ID || 1), roomName: process.env.BOWXT_CHAT_NAME || '小鲸鱼调教', dataDir: data, log, lifecycle,
 });
 const routes = [];
 const cleanup = [];
@@ -46,6 +48,7 @@ const editableConfig = new Set(['enabled', 'persona', 'personaLore', 'personaExa
   'cannedChance', 'contextMessages', 'backfillLimit', 'splitChance', 'maxLines',
   'maxPartsLimit', 'splitHardMax', 'longBubbleMax']);
 const ctx = {
+  standaloneLifecycle: lifecycle,
   standaloneRoom: () => ({ roomId: bridge.roomId, name: bridge.roomBinding().name }),
   logger: { info: log },
   on(name, fn) { hooks.set(name, fn); return () => hooks.delete(name); },
@@ -69,7 +72,8 @@ async function waitForSafePause() {
   while (Date.now() < deadline) {
     const backend = await bridge.inspect();
     if (!backend.state?.paused) throw new Error('接入暂停状态未确认，拒绝操作');
-    if (backend.state.worker_paused && !backend.state.queue_depth && !bridge.status().polling) return true;
+    if (backend.state.worker_paused && !backend.state.queue_depth && !bridge.status().polling
+      && !lifecycle.summary().active && !lifecycle.summary().pending && !lifecycle.summary().fault) return true;
     await new Promise(resolve => setTimeout(resolve, 250));
   }
   return false;
@@ -103,6 +107,12 @@ const server = http.createServer(async (req, res) => {
   try {
     if (ctx.connection.requestRejection(req)) return json(res, 403, { error: '拒绝跨站访问' });
     const path = new URL(req.url, 'http://localhost').pathname;
+    if (path === '/runtime/turns' && req.method === 'GET') return json(res, 200, { summary: lifecycle.summary(), items: lifecycle.list() });
+    if (path === '/runtime/turns/resolve' && req.method === 'POST') {
+      const input = await readJson(req);
+      if (!await waitForSafePause()) return json(res, 409, { error: '请先暂停，并等待业务与微信操作空闲' });
+      return json(res, 200, lifecycle.resolve(input));
+    }
     if (path === '/runtime/persona-backups/create' && req.method === 'POST') {
       await readJson(req);
       if (personaWriteBusy) return json(res, 409, { error: '请等待当前人格编辑完成' });
@@ -115,6 +125,7 @@ const server = http.createServer(async (req, res) => {
     if (path === '/runtime/persona-backups/restore' && req.method === 'POST') {
       const input = await readJson(req);
       if (input.confirm !== true || bridge.status().polling || personaWriteBusy || roomMaintenance) return json(res, 409, { error: '请先暂停回复，并等待其他人格编辑完成后确认恢复' });
+      if (!await waitForSafePause()) return json(res, 409, { error: '业务轮次或 UI 尚未安全暂停' });
       if (typeof ctx.restoreStandalonePersona !== 'function') throw new Error('当前业务未接通人格恢复');
       personaWriteBusy = true;
       try {

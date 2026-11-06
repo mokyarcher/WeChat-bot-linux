@@ -21,7 +21,7 @@
 
 const now0 = () => Date.now()
 
-export function createOutbox({ send, log = () => {}, cfg = {}, now = now0, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
+export function createOutbox({ send, prepare, log = () => {}, cfg = {}, now = now0, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
   if (typeof send !== 'function') throw new Error('outbox: send 必须是函数')
   const C = {
     minGapMs: 1200,
@@ -48,7 +48,9 @@ export function createOutbox({ send, log = () => {}, cfg = {}, now = now0, sleep
 
   /** 入队；返回 promise（成功 resolve 桥返回，失败 reject） */
   function enqueue({ roomId = '', kind = 'sendText', args = {}, priority = 'normal', text = '' } = {}) {
-    const key = roomId + '|' + kind + '|' + String(text || JSON.stringify(args)).slice(0, 120)
+    // Capture identity at enqueue time; a drain loop may belong to another async context.
+    if (prepare) args = prepare(kind, args)
+    const key = roomId + '|' + kind + '|' + (args.requestId || String(text || JSON.stringify(args)).slice(0, 120))
     const t = now()
     const prev = recentKeys.get(key)
     if (prev && t - prev < C.dedupeMs) {
@@ -58,6 +60,7 @@ export function createOutbox({ send, log = () => {}, cfg = {}, now = now0, sleep
     if (queue.length >= C.maxQueue) {
       stats.dropped++
       log(`出站队列满（${C.maxQueue}）→ 丢弃一条 ${kind}`)
+      if (args.requestId) return Promise.reject(new Error('出站队列已满，消息未入队'))
       return Promise.resolve({ ok: false, dropped: true })
     }
     stats.enqueued++
@@ -112,7 +115,7 @@ export function createOutbox({ send, log = () => {}, cfg = {}, now = now0, sleep
         return true
       } catch (e) {
         job.attempts = attempt
-        if (attempt >= C.maxAttempts) {
+        if (e?.retryable === false || attempt >= C.maxAttempts) {
           stats.failed++
           log(`出站失败（${attempt}/${C.maxAttempts}）${job.kind}：` + String(e?.message || e).slice(0, 90))
           job.reject(e)

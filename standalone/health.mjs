@@ -13,6 +13,9 @@ export function buildLinuxHealth(snapshot, bridge, model, now = Date.now()) {
     if (state.last_error) add('接入错误', 'bad', state.last_error);
   }
   add('模型配置', model.hasKey ? 'ok' : 'warn', model.hasKey ? '密钥已配置；本次未调用模型验证' : '尚未配置模型密钥');
+  if (bridge.turns) add('业务轮次', bridge.turns.fault ? 'bad' : bridge.turns.needsReview ? 'warn' : 'ok',
+    bridge.turns.fault ? '轮次存储异常，消费已停止' : `处理中/待处理 ${bridge.turns.pending}；待核查 ${bridge.turns.needsReview}`,
+    bridge.turns.needsReview ? '查看运维日志中的待核查轮次；未完成轮次不会自动重放，发送结果需核查' : '');
   if (snapshot.services?.configured) items.push(...snapshot.services.items.map(item => ({ ...item, text: item.text + '；探测于 ' + new Date(snapshot.services.checkedAt).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai' }) })));
   return { at: now, platform: 'linux', clientConnected: state ? !!state.wechat_connected : null, items, bad: items.filter(i => i.level === 'bad'), warn: items.filter(i => i.level === 'warn') };
 }

@@ -180,7 +180,40 @@ test('original persona and memory survive standalone startup and restart', { tim
   assert.ok(prompt.messages.some(message => message.content.includes('喜欢喝茶')));
   assert.ok(prompt.messages.some(message => message.content.includes('不喝咖啡')));
   assert.ok(sends.map(send => send.text).join('').includes('记着呢'));
+  while ((await api('/runtime/turns')).summary.pending && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  assert.equal((await api('/runtime/turns')).summary.counts.completed, 1, logs);
+  const receipt = { lease_token: 'fixture-lease', message: { seq: 11, chat_id: 1, sender: '测试人',
+    message_type: 'text', content: '@豆姐 中断恢复模拟消息', is_at_me: true,
+    direction: 'incoming', observed_at: new Date().toISOString() } };
+  await api('/wechat-bot/api/config', { patch: { debounceMs: 5000 } });
+  delivery = receipt;
+  const queuedDeadline = Date.now() + 3000;
+  while (!(await api('/runtime/turns')).summary.counts.queued && Date.now() < queuedDeadline) {
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  assert.equal((await api('/runtime/turns')).summary.counts.queued, 1);
+  const exited = new Promise(resolve => child.once('exit', resolve));
+  child.kill('SIGKILL'); await exited;
+  const sendsBeforeRestart = sends.length;
+  await start();
+  const interrupted = await api('/runtime/turns');
+  assert.equal(interrupted.summary.needsReview, 1);
+  assert.equal(interrupted.items[0].id, 'bowxt:11');
+  assert.equal((await api('/runtime/status')).bridge.polling, false);
+  await api('/runtime/enable', { enabled: true });
+  delivery = receipt; // Simulate a redelivery after a lost ACK.
+  await new Promise(resolve => setTimeout(resolve, 350));
+  assert.equal(sends.length, sendsBeforeRestart);
+  assert.equal((await api('/runtime/turns')).summary.pending, 0);
+  assert.equal((await api('/runtime/turns')).summary.needsReview, 1);
+  await assert.rejects(api('/runtime/turns/resolve', { ...interrupted.items[0], confirm: true }));
   await api('/runtime/enable', { enabled: false });
+  await assert.rejects(api('/runtime/turns/resolve', { ...interrupted.items[0], confirm: false }));
+  assert.equal((await api('/runtime/turns/resolve', { ...interrupted.items[0], confirm: true })).ok, true);
+  assert.equal((await api('/runtime/turns')).summary.needsReview, 0);
+  assert.equal(sends.length, sendsBeforeRestart);
 });
 
 test('model errors do not leak provider response bodies or keys', async () => {
