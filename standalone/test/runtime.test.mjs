@@ -4,6 +4,7 @@ import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, readFileSync, rmdirSync } from 'node:fs';
 import { displayIdentity } from '../identities.mjs';
+import { visionTestImage } from '../vision.mjs';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { normalizeMessage } from '../bowxt.mjs';
@@ -29,6 +30,8 @@ test('original persona and memory survive standalone startup and restart', { tim
   writeFileSync(join(data, 'facts/bowxt_1@chatroom.json'), JSON.stringify(memorySeed));
   writeFileSync(join(data, 'memory/bowxt_1@chatroom.json'), JSON.stringify({ roomName: '测试群', msgs: Array.from({ length: 6 }, (_, i) => ({ id: 'seed:' + i, ts: Date.now() - (6 - i) * 1000, isSelf: true, sender: 'self', text: '一起喝茶，聊聊天气。' })) }));
   const prompts = [];
+  const visionPrompts = [];
+  let rejectVision = false;
   const sends = [];
   let delivery;
   let rejectNarrative = false;
@@ -36,10 +39,20 @@ test('original persona and memory survive standalone startup and restart', { tim
     let raw = ''; for await (const chunk of req) raw += chunk;
     const body = JSON.parse(raw || '{}');
     let result = {};
-    if (req.url === '/v1/chat/completions') {
+    if (/^\/api\/messages\/(40|41)\/image$/.test(req.url)) {
+      res.writeHead(200, { 'content-type': 'image/png' }); res.end(visionTestImage()); return;
+    }
+    if (req.url === '/vision/chat/completions') {
+      visionPrompts.push(body);
+      if (rejectVision) { res.writeHead(503); res.end('private-vision-response'); return; }
+      result = { choices: [{ message: { content: '一块白色方块。' } }] };
+    } else if (/^\/api\/messages\/(40|41)$/.test(req.url)) {
+      result = { message: { seq: Number(req.url.split('/').at(-1)), chat_id: 1, direction: 'incoming', message_type: 'image', image_url: 'present' } };
+    } else if (req.url === '/v1/chat/completions') {
       prompts.push(body);
       const sys = body.messages.find(m => m.role === 'system')?.content || '';
       let content = '嗯，记着呢。';
+      if (JSON.stringify(body.messages).includes('白色方块')) content = '看到一块白色的小方块。';
       if (sys.includes('短短的日记')) content = JSON.stringify({ title: '茶香', text: '今天和群友喝茶聊天，记住了大家的偏好。', likes: [], dislikes: [] });
       if (sys.includes('我是个什么样的人')) content = rejectNarrative ? '我是人工智能助手' : '我是豆姐，喜欢喝茶，也喜欢和熟悉的群友慢慢聊天。我记得大家随口说过的小事，会认真听别人讲今天发生了什么。遇到不懂的问题我会直接承认，遇到开心的事也愿意一起笑。我不喜欢把每句话都讲成说明书，希望自己说话自然一点，有自己的喜好，也给别人留出空间。忙的时候可以安静坐着，闲下来再端起茶杯继续聊。';
       if (sys.includes('复盘自己')) content = JSON.stringify({ findings: ['回答短一点，先说具体内容'] });
@@ -284,6 +297,30 @@ test('original persona and memory survive standalone startup and restart', { tim
   assert.ok(Object.hasOwn(personaAfterRename.affinity, displayIdentity(1, '测试人')));
   assert.ok(!Object.hasOwn(personaAfterRename.affinity, displayIdentity(1, '改名后的测试人')));
   assert.equal(sends.length, sendCount); assert.equal(prompts.length, modelCount);
+  await api('/runtime/enable', { enabled: false });
+  await api('/wechat-bot/api/config', { patch: { quietHours: '', quietAllow: ['at', 'name'], minReplyGapMs: 0, repeatWindowMs: 0,
+    typingDelayScale: 0, maxReplyChars: 200, cannedChance: 0, splitChance: 0 } });
+  await api('/runtime/vision', { enabled: true, baseUrl: backend + '/vision', model: 'vision-fixture', apiKey: 'separate-vision-fixture' });
+  const visualState = await api('/runtime/vision'); assert.equal(visualState.hasKey, true); assert.ok(!JSON.stringify(visualState).includes('separate-vision-fixture'));
+  await api('/runtime/enable', { enabled: true });
+  delivery = { ...receipt, message: { ...receipt.message, seq: 40, message_type: 'image', content: '[图片]' } };
+  assert.equal((await waitForRound(40)).state, 'completed', logs);
+  assert.equal(visionPrompts.length, 1);
+  assert.match(visionPrompts[0].messages[0].content[1].image_url.url, /^data:image\/png;base64,/);
+  assert.ok(prompts.at(-1).messages.some(m => String(m.content).includes('白色方块')));
+  assert.ok(sends.at(-1).text.includes('白色'));
+  assert.equal(readdirSync(join(data, 'media-temp')).length, 0);
+  rejectVision = true;
+  await api('/runtime/vision', { enabled: true, baseUrl: backend + '/vision', model: 'vision-fixture-2', apiKey: '' });
+  const beforeImageFailure = sends.length;
+  delivery = { ...receipt, message: { ...receipt.message, seq: 41, message_type: 'image', content: '[图片]' } };
+  assert.equal((await waitForRound(41)).reason, 'image_understanding_failed');
+  assert.equal(sends.length, beforeImageFailure); assert.equal(visionPrompts.length, 2);
+  assert.ok(!logs.includes('private-vision-response'));
+  await api('/runtime/vision', { enabled: false, baseUrl: backend + '/vision', model: 'vision-fixture-2', apiKey: '' });
+  delivery = { ...receipt, message: { ...receipt.message, seq: 42, message_type: 'image', content: '[图片]' } };
+  assert.equal((await waitForRound(42)).reason, 'image_disabled');
+  assert.equal(visionPrompts.length, 2);
   await api('/runtime/enable', { enabled: false });
 });
 

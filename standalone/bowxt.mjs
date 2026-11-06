@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync, renameSync, openSync, fsyncSyn
 import { join } from 'node:path';
 import { readMessagePage } from './history.mjs';
 import { inspectOutbound } from './outbound-check.mjs';
+import { fetchImage } from './vision.mjs';
 
 export function normalizeMessage(message, chatId, roomName) {
   const senderName = message.sender || '';
@@ -12,7 +13,7 @@ export function normalizeMessage(message, chatId, roomName) {
     ? 'local:' + createHash('sha256').update(chatId + '\0' + senderName).digest('hex').slice(0, 24) : '';
   return { id: 'bowxt:' + message.seq, roomId: `bowxt:${chatId}@chatroom`, roomName,
     sender, senderName: isSelf ? '我' : senderName, isSelf, isGroup: true,
-    type: 1, typeName: 'text', text: message.content || '', content: message.content || '',
+    type: message.message_type === 'image' ? 3 : 1, typeName: message.message_type === 'image' ? 'image' : 'text', text: message.message_type === 'image' ? '[图片]' : message.content || '', content: message.message_type === 'image' ? '[图片]' : message.content || '',
     // Linux UI timestamps are shared group separators, not per-message send times.
     ts: Date.parse(message.observed_at) || Date.parse(message.timestamp) || Date.now(),
     observedAt: Date.parse(message.observed_at) || null, sourceTs: Date.parse(message.timestamp) || null,
@@ -76,7 +77,7 @@ export function installBridge(BridgeClient, settings) {
         // Refuse unexpected rooms even if the backend ignores the subscription filter.
         if (message.chat_id !== settings.chatId) throw new Error('接入服务返回了非白名单群消息');
         const normalized = settings.identities ? settings.identities.apply(normalizeMessage(message, settings.chatId, settings.roomName), true) : normalizeMessage(message, settings.chatId, settings.roomName);
-        if (message.message_type === 'text') {
+        if (message.message_type === 'text' || (message.message_type === 'image' && settings.visionEnabled?.())) {
           // Durable receipt precedes both dispatch and ACK. A repeated claim is ACKed,
           // but never starts a second business task (including after a restart).
           if (!settings.lifecycle || settings.lifecycle.receive(normalized)) {
@@ -84,7 +85,7 @@ export function installBridge(BridgeClient, settings) {
             for (const client of clients) client.onEvent({ t: 'msg', m: normalized });
           }
         } else if (settings.lifecycle?.receive({ ...normalized, type: 0, typeName: message.message_type })) {
-          settings.lifecycle.ignore(normalized, 'unsupported_type');
+          settings.lifecycle.ignore(normalized, message.message_type === 'image' ? 'image_disabled' : 'unsupported_type');
         }
         await api(`/api/agents/${activeConsumer}/deliveries/${message.seq}/ack`, { lease_token: delivery.lease_token }, 'POST', controller.signal);
       }
@@ -120,6 +121,14 @@ export function installBridge(BridgeClient, settings) {
   };
   BridgeClient.prototype.call = async function (op, args = {}) {
     if (args.roomId && args.roomId !== roomId) throw new Error('目标群不在 Linux 白名单');
+    if (op === 'fetchMedia') {
+      if (!polling || !settings.visionEnabled?.()) throw new Error('图片感知未启用');
+      settings.visionState?.('fetching');
+      try {
+        return await fetchImage({ api, dataDir: settings.dataDir, chatId: settings.chatId, messageId: args.messageId,
+          fetchAsset: path => fetch(settings.baseUrl + path, { signal: AbortSignal.timeout(10000) }) });
+      } catch (error) { settings.visionState?.('image_unavailable'); throw error; }
+    }
     if (op === 'identify') return { ok: true };
     if (op === 'status') {
       try { backendConnected = !!(await api('/api/status')).wechat_connected; }

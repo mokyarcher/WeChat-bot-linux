@@ -544,6 +544,7 @@ function renderActive(opts) {
   if (!App.S) return;
   const nav = NAV.find(n => n.id === App.tab);
   if (!nav) { App.tab = 'overview'; return renderActive(opts); }
+  if (App.S.platform === 'linux' && nav.id === 'senses') return renderLinuxVision();
   if (App.S.platform === 'linux' && nav.id === 'ops') return renderLinuxOps().catch(e => { view.textContent = '运维信息读取失败：' + e.message; });
   if (App.S.platform === 'linux' && ['proactive', 'sticker', 'senses', 'voice', 'moment', 'update'].includes(nav.id)) {
     view.innerHTML = `<h2>${esc(nav.title)}</h2><div class="section"><p>此功能尚未接入当前 Linux 部署，暂不提供操作。</p><p class="muted">当前文字聊天、人设与记忆仍正常工作。原版更新流程不适用于本组合部署。</p></div>`;
@@ -797,7 +798,7 @@ function renderFeatures() {
       return `<div class="card fcard ${on ? '' : 'off'}" data-f="${f.id}">
         <div class="top"><div class="ico">${f.icon}</div><div class="grow">
           <div class="t">${esc(f.title)} ${risk ? `<span class="risk ${risk==='critical'?'critical':''}">${risk==='critical'?'高危':risk==='high'?'高风险':'注意'}</span>` : ''}</div>
-          <div class="d">${f.unsupported ? 'Linux 尚未开放此配置 · ' : ''}${esc(f.desc)}</div></div>
+          <div class="d">${f.unsupported ? esc(f.unsupportedReason || 'Linux 尚未开放此配置') + ' · ' : ''}${esc(f.desc)}</div></div>
           ${f.kind === 'select'
             ? `<select data-select="${f.id}" ${f.unsupported ? 'disabled' : ''} style="padding:4px">${(f.options||[]).map(o => `<option ${S.config[f.key]===o?'selected':''}>${esc(o)}</option>`).join('')}</select>`
             : `<label class="sw"><input type="checkbox" data-feature="${f.id}" ${f.unsupported ? 'disabled' : ''} ${on ? 'checked' : ''}><i></i></label>`}
@@ -2383,7 +2384,7 @@ async function renderLinuxOps() {
     if (!recentBox.isConnected) return; recentBox.replaceChildren();
     const title = document.createElement('div'); title.className = 'hd'; title.textContent = '最近 50 条消息的处理过程'; recentBox.appendChild(title);
     const note = document.createElement('p'); note.className = 'muted'; note.textContent = '同一批合并消息共享处理过程；总耗时含合并、模型及发送等待，不是纯模型耗时。旧记录不补造耗时，中断区间无法确定；刷新查看进行中的任务。'; recentBox.appendChild(note);
-    const names = { received: '接收与入站', debounce: '合并等待', decision: '回复判断', generating: '模型与检索', typing: '模拟打字', sending: '排队与发送确认', send_confirmed: '发送已确认', part_gap: '拆句间隔', finished: '业务结束', interrupted: '进程中断', recovery_dispatch: '续处理', skipped: '跳过', completed: '完成', needs_review: '待核查', queued: '已入队', processing: '处理中', silence: '情境沉默', sleepy: '低精力静默', repeat_question: '重复问题', quiet_hours: '安静时段', policy_blocked: '频率/低信息等策略限制', no_reply: '模型选择不回复或无可用正文', disabled: '总回复开关未启用', self_message: '自身消息', not_queued: '未进入回复队列', reply_confirmed: '回复已确认', generation_failed: '生成失败', model_failed: '模型失败', send_unconfirmed: '发送未确认', delivery_failed: '投递失败', processing_failed: '处理失败', memory_write_failed: '记忆保存失败', unsupported_type: '未支持类型', dry_run: '仅演练', in_progress: '处理中', stopped: '服务收尾' };
+    const names = { image_fetch: '图片取得', image_understanding: '图片描述', image_disabled: '图片感知未启用', image_understanding_failed: '图片未能取得或识别', received: '接收与入站', debounce: '合并等待', decision: '回复判断', generating: '模型与检索', typing: '模拟打字', sending: '排队与发送确认', send_confirmed: '发送已确认', part_gap: '拆句间隔', finished: '业务结束', interrupted: '进程中断', recovery_dispatch: '续处理', skipped: '跳过', completed: '完成', needs_review: '待核查', queued: '已入队', processing: '处理中', silence: '情境沉默', sleepy: '低精力静默', repeat_question: '重复问题', quiet_hours: '安静时段', policy_blocked: '频率/低信息等策略限制', no_reply: '模型选择不回复或无可用正文', disabled: '总回复开关未启用', self_message: '自身消息', not_queued: '未进入回复队列', reply_confirmed: '回复已确认', generation_failed: '生成失败', model_failed: '模型失败', send_unconfirmed: '发送未确认', delivery_failed: '投递失败', processing_failed: '处理失败', memory_write_failed: '记忆保存失败', unsupported_type: '未支持类型', dry_run: '仅演练', in_progress: '处理中', stopped: '服务收尾' };
     for (const item of result.items) {
       const row = document.createElement('details'); const summary = document.createElement('summary');
       summary.textContent = item.id + ' · ' + new Date(item.receivedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) + ' · ' + (names[item.state] || item.state) + ' · ' + (names[item.reason] || '需结合业务日志核查') + ' · ' + (item.totalMs == null ? '完整耗时不可确定' : (item.totalMs / 1000).toFixed(3) + ' 秒') + (item.ongoing ? '（尚未结束）' : '');
@@ -4210,6 +4211,37 @@ async function renderLinuxIdentities(parent) {
   };
   box.append(title, note, alias, target, preview, commit, detail, links);
   try { await refresh(); } catch (error) { detail.textContent = '读取失败：' + error.message; }
+}
+
+async function renderLinuxVision() {
+  view.innerHTML = '<h2>多模感知</h2>';
+  const box = document.createElement('div'); box.className = 'section'; view.appendChild(box);
+  const title = document.createElement('div'); title.className = 'hd'; title.textContent = '普通图片理解';
+  const note = document.createElement('p'); note.className = 'muted'; note.textContent = '仅当前监听群的普通图片；先由微信可见界面取得图片，再用独立视觉模型描述，交回原人设、记忆与回复策略。只支持兼容 Chat Completions 且可接收 image_url 的视觉接口。视频、表情包、发图和语音尚未接入。启用会把群图片发送给你配置的视觉服务，并可能产生费用。';
+  const enabled = document.createElement('select'); for (const [value, text] of [['false', '关闭图片感知'], ['true', '启用图片感知']]) { const option = document.createElement('option'); option.value = value; option.textContent = text; enabled.appendChild(option); }
+  const url = document.createElement('input'); url.placeholder = '独立视觉接口地址，如 https://服务域名/v1';
+  const model = document.createElement('input'); model.placeholder = '具备图像输入能力的模型名称';
+  const key = document.createElement('input'); key.type = 'password'; key.autocomplete = 'new-password'; key.placeholder = '独立视觉 API Key，不沿用文字密钥';
+  const save = document.createElement('button'); save.className = 'btn primary'; save.textContent = '保存视觉配置';
+  const test = document.createElement('button'); test.className = 'btn'; test.textContent = '测试图像请求（调用模型）';
+  const refresh = document.createElement('button'); refresh.className = 'btn'; refresh.textContent = '刷新识图状态';
+  const result = document.createElement('p'); result.className = 'muted';
+  const status = document.createElement('p'); status.className = 'muted';
+  let saved;
+  const request = async (path, body) => { const r = await fetch('/runtime/vision' + path, body === undefined ? {} : { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); const data = await r.json(); if (!r.ok) throw new Error(data.error || '请求失败'); return data; };
+  const load = async fill => {
+    saved = await request(''); if (!box.isConnected) return;
+    if (fill) { enabled.value = String(saved.enabled); url.value = saved.baseUrl; model.value = saved.model; }
+    key.placeholder = saved.hasKey ? '同一视觉接口留空保留密钥；切换接口需新密钥' : '填写独立视觉密钥';
+    const labels = { idle: '尚未执行识图', disabled: '已关闭', ready: '已配置，尚未实图验收', fetching: '正在取得图片', image_unavailable: '图片未能取得，请查看微信桌面/接入状态', recognizing: '正在调用视觉模型', vision_failed: '视觉调用失败或超时，请检查配置', understood: '已取得图像描述（可能来自缓存）' };
+    status.textContent = (saved.enabled ? '已启用' : '未启用') + '；' + (saved.configured ? '独立模型配置完整' : '尚未完整配置独立模型') + '；' + (labels[saved.last.state] || '状态未知') + '。最大 8 MiB；视觉请求 20 秒超时，并发一张。';
+  };
+  const run = async fn => { save.disabled = test.disabled = refresh.disabled = true; try { await fn(); } catch (error) { result.textContent = '未完成：' + error.message; } finally { if (save.isConnected) save.disabled = test.disabled = refresh.disabled = false; } };
+  save.onclick = () => run(async () => { await request('', { enabled: enabled.value === 'true', baseUrl: url.value.trim(), model: model.value.trim(), apiKey: key.value }); key.value = ''; await load(true); result.textContent = '已保存，仅对之后的新图片生效；不会重放旧图片。'; });
+  test.onclick = () => { if (!confirm('使用已保存的视觉配置发送一张内置微小测试图？会调用模型产生费用，不发送微信消息，也不使用聊天图片。')) return; void run(async () => { const data = await request('/test', {}); result.textContent = data.note; }); };
+  refresh.onclick = () => run(() => load(false));
+  box.append(title, note); for (const [text, element] of [['图片感知', enabled], ['视觉接口', url], ['视觉模型', model], ['视觉密钥', key]]) { const label = document.createElement('label'); label.textContent = text; label.appendChild(element); box.appendChild(label); }
+  box.append(save, test, refresh, status, result); await run(() => load(true));
 }
 </script>
 </div>

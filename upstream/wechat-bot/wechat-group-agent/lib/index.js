@@ -1196,7 +1196,7 @@ const namesFile = join(dirname(memoryDir), 'members.json')
   ctx.on('llm/stream', (options, next) => {
     if (pluginLlmDepth > 0 && options?.provider && options?.model) {
         lastRoute = { provider: options.provider, model: options.model }
-        if (!config.visionModel || options.model !== config.visionModel) {
+        if (options.provider !== 'standalone-vision' && (!config.visionModel || options.model !== config.visionModel)) {
           lastTextRoute = { provider: options.provider, model: options.model }
         }
       }
@@ -1422,7 +1422,7 @@ const namesFile = join(dirname(memoryDir), 'members.json')
     }
 
     r.msgs.push({ id: m.id || '', ts, seq: m.seq, timeBasis: m.timeBasis, sourceTs: m.sourceTs,
-      isSelf: !!m.isSelf, sender: m.sender, senderName, text: m.text })
+      isSelf: !!m.isSelf, sender: m.sender, senderName, text: m.text, ...(ctx.standaloneVisionRoute && m.imageDesc ? { imageDesc: m.imageDesc, typeName: m.typeName } : {}) })
     // 性格：每条消息都过一遍状态机（心情/精力/亲密度/目标进度）
     // ⑥ 羁绊计数：相识时间 + 累计互动条数（bondLevel 用这两个维度）
     try {
@@ -1651,23 +1651,25 @@ const namesFile = join(dirname(memoryDir), 'members.json')
     //   普通图片（type 3）：走本地 .dat 解密（我们自己实现，见 wx-bridge/lib/wechat-image.mjs）
     //   视频（type 43）：**主路**抽 N 帧拼联系表 + 抽音轨转写（wx-bridge/lib/wechat-video.mjs）；
     //                    视频没落盘就退回明文封面（那时只有封面帧）。降级链：视频内容 → 封面 → [视频]
-    if (['image', 'emoticon', 'video'].includes(m.typeName) && config.visionOnImage
+    if (['image', 'emoticon', 'video'].includes(m.typeName) && (ctx.standaloneVisionRoute ? !!ctx.standaloneVisionRoute() : config.visionOnImage)
           && (m.typeName !== 'emoticon' || config.visionOnEmoticon)
           && (m.typeName !== 'video' || config.visionOnVideo)) {
       const isVideo = m.typeName === 'video'
       try {
+        if (ctx.standaloneVisionRoute) ctx.standaloneLifecycle?.markImage(m.id, 'image_fetch')
         const media = isVideo
           ? await client.call('fetchVideo', {
             xml: m.xml || '', roomId: m.roomId || '', ts: m.ts || 0,
             frames: Number(config.videoFrames) || 6,
             fps: config.videoFps === undefined ? 1 : Number(config.videoFps),
           }, 300_000)
-          : await client.call('fetchMedia', { xml: m.xml || '', type: m.type, roomId: m.roomId || '', ts: m.ts || 0 }, 90_000)
+          : await client.call('fetchMedia', { xml: m.xml || '', type: m.type, roomId: m.roomId || '', ts: m.ts || 0, ...(ctx.standaloneVisionRoute ? { messageId: m.id } : {}) }, 90_000)
         if (media?.file) {
           const kind = !isVideo ? 'image' : (media.kind === 'video' ? 'videoSheet' : 'videoCover')
           // ★ 视频可能有多张联系表（每秒 1 帧，每 20 帧一张）→ 逐张识别后汇总
           const sheets = isVideo && Array.isArray(media.sheets) ? media.sheets.filter(Boolean) : []
           let desc = ''
+          if (ctx.standaloneVisionRoute) ctx.standaloneLifecycle?.markImage(m.id, 'image_understanding')
           if (sheets.length > 1) {
             const parts = []
             for (let si = 0; si < sheets.length; si++) {
@@ -1692,6 +1694,7 @@ const namesFile = join(dirname(memoryDir), 'members.json')
           if (isVideo && media.wav) audioText = await transcribeVoice(media.wav, String(m.id || '') + ':va')
           if (desc || audioText) {
             m.imageDesc = desc || ''
+            if (ctx.standaloneVisionRoute && desc) ctx.standaloneVisionState?.('understood')
             m.videoCover = isVideo && media.kind === 'cover'
             m.videoAudio = audioText
             m.videoSeconds = Number(media.durationSec) || 0
@@ -1788,6 +1791,10 @@ const namesFile = join(dirname(memoryDir), 'members.json')
     }
 
     push(r, m)
+    if (ctx.standaloneVisionRoute && m.typeName === 'image' && !m.imageDesc) {
+      ctx.standaloneLifecycle?.ignore(m, 'image_understanding_failed')
+      return
+    }
 
     // ★ 群聊事件触发朋友圈：有人说话就安排一次"安静后评估"（防抖/冷却/额度都在内部判）
     try { scheduleChatMomentEval(r) } catch (e) { log('朋友圈事件调度异常：' + String(e?.message || e)) }
@@ -4163,7 +4170,7 @@ ${cur.text}`
    *  kind='videoCover' 时用"视频封面"的提示词，并单独一个缓存命名空间（同一张图当图片/当封面时描述不串）。 */
   async function describeImageCached(file, kind = 'image') {
     const h = hashFile(file)
-    const key = (h && kind !== 'image') ? kind + ':' + h : h     // 兼容旧缓存（图片仍用纯 hash 键）
+    const key = ctx.standaloneVisionRoute ? ((ctx.standaloneVisionCacheScope?.() || '') + ':' + kind + ':' + h) : (h && kind !== 'image') ? kind + ':' + h : h     // 兼容旧缓存（图片仍用纯 hash 键）
     if (key) {
       const c = loadVisionCache()
       if (c[key]?.desc) {
@@ -4260,8 +4267,9 @@ ${cur.text}`
    * @param {string} [kind] 'image'（默认）或 'videoCover'（视频封面帧：提示词必须如实说明只有封面）
    */
   async function describeImage(file, kind = 'image', override = null) {
-    const vProvider = override?.provider || config.visionProvider || config.provider || undefined
-    const vModel = override?.model || config.visionModel
+    const standaloneRoute = ctx.standaloneVisionRoute?.()
+    const vProvider = ctx.standaloneVisionRoute ? standaloneRoute?.provider : override?.provider || config.visionProvider || config.provider || undefined
+    const vModel = ctx.standaloneVisionRoute ? standaloneRoute?.model : override?.model || config.visionModel
     if (!vModel) return ''
     let buf
     try { buf = readFileSync(file) } catch { return '' }
@@ -4330,7 +4338,7 @@ ${cur.text}`
     }
     let out = String(text).trim().slice(0, 200)
     // ★ 2026-10-30：DSH 这条链路"没把图传过去"时（返回空 / 模型说没收到图），直连兜底一次
-    if (config.visionDirect !== false) {
+    if (!ctx.standaloneVisionRoute && config.visionDirect !== false) {
       // 判定"模型其实没看到图"：空返回 / 说没收到图 / 说被省略或只给了哈希 / 只回了敷衍的一句
       const BLIND = /没(有)?收到|看不到|看不清|被省略|省略了|哈希|附件|没有图片|图片未成功|没有成功传|没看到|无法|没法|重新发|只能处理文字/
       const looksBlind = !out || [...out].length < 6 || BLIND.test(out)

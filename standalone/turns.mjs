@@ -89,6 +89,7 @@ export function createTurnJournal(dataDir, roomId) {
         throw error;
       } finally { active--; }
     },
+    markImage(id, phase) { if (records.get(id)?.state === 'received') change([id], { phase }); },
     queued(message) { change([message.id], { state: 'queued', phase: 'debounce' }); },
     ignore(message, reason) { change([message.id], { state: 'skipped', reason }); },
     async batch(messages, fn) {
