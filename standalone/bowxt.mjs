@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync, renameSync, openSync, fsyncSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
 import { readMessagePage } from './history.mjs';
+import { inspectOutbound } from './outbound-check.mjs';
 
 export function normalizeMessage(message, chatId, roomName) {
   const senderName = message.sender || '';
@@ -186,6 +187,9 @@ export function installBridge(BridgeClient, settings) {
   };
   return {
     roomId, status,
+    inspectOutbound(requestIds) {
+      return inspectOutbound(path => api(path, undefined, 'GET', AbortSignal.timeout(5000)), settings.chatId, requestIds, requests);
+    },
     messagePage(options) {
       return readMessagePage(api, settings.chatId, m => normalizeMessage(m, settings.chatId, settings.roomName), options);
     },

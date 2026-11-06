@@ -113,6 +113,11 @@ export function createTurnJournal(dataDir, roomId) {
       return [...records.values()].filter(r => r.state === 'needs_review').sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 100)
         .map(({ id, batchId, state, phase, failureStage, reason, receivedAt, updatedAt }) => ({ id, batchId, state, phase, failureStage, reason, receivedAt, updatedAt }));
     },
+    outbound(id) {
+      const record = records.get(id);
+      if (!record || record.state !== 'needs_review') throw new Error('未找到当前群待核查轮次，请刷新列表');
+      return [...(record.outboundIds || [])];
+    },
     resolve({ id, updatedAt, confirm }) {
       const record = records.get(id);
       if (confirm !== true || !record || record.state !== 'needs_review' || record.updatedAt !== updatedAt) throw new Error('请刷新并确认待核查轮次');

@@ -108,6 +108,10 @@ const server = http.createServer(async (req, res) => {
     if (ctx.connection.requestRejection(req)) return json(res, 403, { error: '拒绝跨站访问' });
     const path = new URL(req.url, 'http://localhost').pathname;
     if (path === '/runtime/turns' && req.method === 'GET') return json(res, 200, { summary: lifecycle.summary(), items: lifecycle.list() });
+    if (path === '/runtime/turns/outbound' && req.method === 'GET') {
+      const id = new URL(req.url, 'http://localhost').searchParams.get('id');
+      return json(res, 200, await bridge.inspectOutbound(lifecycle.outbound(id)));
+    }
     if (path === '/runtime/turns/resolve' && req.method === 'POST') {
       const input = await readJson(req);
       if (!await waitForSafePause()) return json(res, 409, { error: '请先暂停，并等待业务与微信操作空闲' });

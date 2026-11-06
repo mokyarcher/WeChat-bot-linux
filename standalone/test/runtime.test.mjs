@@ -201,6 +201,8 @@ test('original persona and memory survive standalone startup and restart', { tim
   const interrupted = await api('/runtime/turns');
   assert.equal(interrupted.summary.needsReview, 1);
   assert.equal(interrupted.items[0].id, 'bowxt:11');
+  assert.equal((await api('/runtime/turns/outbound?id=bowxt%3A11')).total, 0);
+  await assert.rejects(api('/runtime/turns/outbound?id=other'));
   assert.equal((await api('/runtime/status')).bridge.polling, false);
   await api('/runtime/enable', { enabled: true });
   delivery = receipt; // Simulate a redelivery after a lost ACK.

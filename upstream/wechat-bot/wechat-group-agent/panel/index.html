@@ -2378,7 +2378,20 @@ async function renderLinuxOps() {
           await refresh();
         } catch (error) { if (row.isConnected) { text.textContent = '操作失败：' + error.message; button.disabled = false; } }
       };
-      row.append(text, button); turnBox.appendChild(row);
+      const inspect = document.createElement('button'); inspect.className = 'btn'; inspect.textContent = '核对发送结果';
+      const details = document.createElement('p'); details.className = 'muted'; details.style.whiteSpace = 'pre-wrap';
+      inspect.onclick = async () => {
+        inspect.disabled = true; details.textContent = '正在只读查询发送记录…';
+        try {
+          const r = await fetch('/runtime/turns/outbound?id=' + encodeURIComponent(item.id)); const data = await r.json();
+          if (!r.ok) throw new Error(data.error || '查询失败');
+          const states = { sent: '接入记录已发送', pending: '接入记录仍在等待处理', failed: '接入标记失败，仍需核对微信', unknown: '无法确定', local_confirmed: '仅本地曾确认发送，当前查询未找到', no_request_record: '没有发送请求记录，不能据此断定未发送', identity_mismatch: '记录身份不一致，不能确认', unavailable: '记录不可查询，请检查接入状态' };
+          const lines = data.items.map(part => '第 ' + part.part + ' 段：' + (states[part.status] || '无法确定') + (part.scope === 'recent_100' ? '（仅搜索最近 100 条）' : ''));
+          details.textContent = (data.total ? lines.join('\n') : '没有已登记的回复分段；可能尚未进入发送阶段，不能证明整个业务已完成。') + (data.truncated ? '\n仅展示前 20 段，请结合日志继续核查。' : '') + '\n只读核查不会补发、结束轮次或更新记忆；接入记录已发送也不等于确认对方收到。核查时间：' + new Date(data.checkedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+        } catch (error) { details.textContent = '核查失败：' + error.message; }
+        finally { if (inspect.isConnected) inspect.disabled = false; }
+      };
+      row.append(text, inspect, button, details); turnBox.appendChild(row);
     }
   };
   const refresh = async () => {
