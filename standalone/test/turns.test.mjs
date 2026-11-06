@@ -74,6 +74,44 @@ test('business task remains active until background memory work settles', async 
   assert.equal(journal.summary().counts.completed, 1);
 });
 
+test('only recent interrupted queued text can resume once, with confirmation and stale-state protection', async () => {
+  const data = temp();
+  const first = createTurnJournal(data, roomId);
+  const m = { ...message(1), typeName: 'text', isSelf: false };
+  first.receive(m); first.queued(m);
+  const restored = createTurnJournal(data, roomId);
+  const item = restored.list()[0];
+  assert.equal(item.canResume, true);
+  let calls = 0;
+  await assert.rejects(restored.resume({ ...item, confirm: false }, () => calls++));
+  await assert.rejects(restored.resume({ ...item, confirm: true, updatedAt: item.updatedAt - 1 }, () => calls++));
+  await restored.resume({ ...item, confirm: true }, async actual => { calls++; assert.equal(actual.id, m.id); restored.queued(actual); });
+  assert.equal(calls, 1);
+  await assert.rejects(restored.resume({ ...item, confirm: true }, () => calls++));
+  const interruptedAgain = createTurnJournal(data, roomId);
+  assert.equal(interruptedAgain.list()[0].canResume, false);
+  await assert.rejects(interruptedAgain.resume({ ...interruptedAgain.list()[0], confirm: true }, () => calls++));
+  assert.equal(calls, 1);
+});
+
+test('expired, self, non-text, model-stage and outbound tasks stay manual review', async t => {
+  for (const kind of ['expired', 'self', 'image', 'processing', 'outbound']) {
+    const data = temp(), journal = createTurnJournal(data, roomId);
+    const m = { ...message(1), typeName: kind === 'image' ? 'image' : 'text', isSelf: kind === 'self' };
+    journal.receive(m); journal.queued(m);
+    if (kind === 'processing' || kind === 'outbound') {
+      void journal.batch([m], () => { if (kind === 'outbound') journal.outboundId(); return new Promise(() => {}); });
+    }
+    const restored = createTurnJournal(data, roomId);
+    if (kind === 'expired') {
+      const now = Date.now(); t.mock.method(Date, 'now', () => now + 300001);
+    }
+    assert.equal(restored.list()[0].canResume, false, kind);
+    await assert.rejects(restored.resume({ ...restored.list()[0], confirm: true }, () => assert.fail('must not dispatch')));
+    t.mock.restoreAll();
+  }
+});
+
 test('outbox captures identity before shared drain, preserves identical distinct replies and never retries uncertain sends', async () => {
   const journal = createTurnJournal(temp(), roomId);
   const sent = [];

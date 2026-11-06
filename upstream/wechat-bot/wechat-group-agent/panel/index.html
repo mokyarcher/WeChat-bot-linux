@@ -2391,6 +2391,19 @@ async function renderLinuxOps() {
         } catch (error) { details.textContent = '核查失败：' + error.message; }
         finally { if (inspect.isConnected) inspect.disabled = false; }
       };
+      if (item.canResume) {
+        const resume = document.createElement('button'); resume.className = 'btn'; resume.textContent = '继续处理';
+        resume.onclick = async () => {
+          if (!confirm('继续处理这条最近 5 分钟内、尚未开始业务判断的消息？需要先启用机器人；会按当前人设与回复策略处理，可能调用模型并向群回复。最多恢复一次。')) return;
+          resume.disabled = true;
+          try {
+            const r = await fetch('/runtime/turns/resume', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: item.id, updatedAt: item.updatedAt, confirm: true }) });
+            const data = await r.json(); if (!r.ok) throw new Error(data.error || '继续处理失败');
+            await refresh();
+          } catch (error) { details.textContent = '继续处理失败：' + error.message; if (resume.isConnected) resume.disabled = false; }
+        };
+        row.appendChild(resume);
+      }
       row.append(text, inspect, button, details); turnBox.appendChild(row);
     }
   };

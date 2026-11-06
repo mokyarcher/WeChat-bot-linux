@@ -108,6 +108,12 @@ const server = http.createServer(async (req, res) => {
     if (ctx.connection.requestRejection(req)) return json(res, 403, { error: '拒绝跨站访问' });
     const path = new URL(req.url, 'http://localhost').pathname;
     if (path === '/runtime/turns' && req.method === 'GET') return json(res, 200, { summary: lifecycle.summary(), items: lifecycle.list() });
+    if (path === '/runtime/turns/resume' && req.method === 'POST') {
+      const input = await readJson(req);
+      if (!bridge.status().polling || roomMaintenance || personaWriteBusy || memoryWriteBusy) return json(res, 409, { error: '请先启用机器人，并等待维护或编辑任务完成' });
+      if (typeof ctx.resumeStandaloneQueued !== 'function') throw new Error('业务层未接通续处理');
+      return json(res, 200, await lifecycle.resume(input, ctx.resumeStandaloneQueued));
+    }
     if (path === '/runtime/turns/outbound' && req.method === 'GET') {
       const id = new URL(req.url, 'http://localhost').searchParams.get('id');
       return json(res, 200, await bridge.inspectOutbound(lifecycle.outbound(id)));

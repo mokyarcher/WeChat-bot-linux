@@ -33,7 +33,7 @@ export function createTurnJournal(dataDir, roomId) {
     if (record.version !== 1 || record.roomId !== roomId || hash(record.id) + '.json' !== name
       || !['received', 'queued', 'processing', ...terminal].includes(record.state)) throw new Error('轮次记录格式或群范围不符，拒绝启动');
     records.set(record.id, record);
-    if (!terminal.has(record.state)) save({ ...record, state: 'needs_review', reason: 'interrupted', updatedAt: Date.now() });
+    if (!terminal.has(record.state)) save({ ...record, interruptedState: record.state, state: 'needs_review', reason: 'interrupted', updatedAt: Date.now() });
   }
   const change = (ids, patch) => {
     for (const id of ids) {
@@ -43,6 +43,11 @@ export function createTurnJournal(dataDir, roomId) {
     }
   };
   const inScope = () => scope.getStore();
+  const canResume = record => record.state === 'needs_review' && record.reason === 'interrupted'
+    && record.interruptedState === 'queued' && record.phase === 'debounce' && !record.recoveryAttempts
+    && !record.outboundIds?.length && record.message?.typeName === 'text' && !record.message.isSelf
+    && record.message.roomId === roomId && record.message.id === record.id
+    && Date.now() >= record.receivedAt && Date.now() - record.receivedAt <= 300000;
   return {
     receive(message) {
       if (fault) throw new Error('轮次存储异常，拒绝消费');
@@ -111,7 +116,20 @@ export function createTurnJournal(dataDir, roomId) {
     },
     list() {
       return [...records.values()].filter(r => r.state === 'needs_review').sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 100)
-        .map(({ id, batchId, state, phase, failureStage, reason, receivedAt, updatedAt }) => ({ id, batchId, state, phase, failureStage, reason, receivedAt, updatedAt }));
+        .map(record => {
+          const { id, batchId, state, phase, failureStage, reason, receivedAt, updatedAt } = record;
+          return { id, batchId, state, phase, failureStage, reason, receivedAt, updatedAt, canResume: canResume(record) };
+        });
+    },
+    async resume({ id, updatedAt, confirm }, fn) {
+      const record = records.get(id);
+      if (fault || active || this.summary().pending || confirm !== true || !record || record.updatedAt !== updatedAt || !canResume(record)) throw new Error('该轮次不能继续处理，请刷新并检查任务状态或消息时效');
+      // Consume the recovery permission durably BEFORE invoking business code.
+      // A second interruption is always manual review, even before any send.
+      change([id], { state: 'received', phase: 'recovery_dispatch', recoveryAttempts: 1 });
+      try { await this.ingest(record.message, fn); }
+      catch { throw new Error('继续处理未完成，请核对轮次与业务日志'); }
+      return { ok: true };
     },
     outbound(id) {
       const record = records.get(id);

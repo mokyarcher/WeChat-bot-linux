@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { normalizeMessage } from '../bowxt.mjs';
@@ -216,6 +216,26 @@ test('original persona and memory survive standalone startup and restart', { tim
   assert.equal((await api('/runtime/turns/resolve', { ...interrupted.items[0], confirm: true })).ok, true);
   assert.equal((await api('/runtime/turns')).summary.needsReview, 0);
   assert.equal(sends.length, sendsBeforeRestart);
+  await api('/runtime/enable', { enabled: true });
+  delivery = { ...receipt, message: { ...receipt.message, seq: 12, content: '@豆姐 请说说喝茶的事情' } };
+  const resumeDeadline = Date.now() + 4000;
+  while (!(await api('/runtime/turns')).summary.counts.queued && Date.now() < resumeDeadline) await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal((await api('/runtime/turns')).summary.counts.queued, 1);
+  const killed = new Promise(resolve => child.once('exit', resolve)); child.kill('SIGKILL'); await killed;
+  await start();
+  const recoverable = (await api('/runtime/turns')).items.find(item => item.id === 'bowxt:12');
+  assert.equal(recoverable.canResume, true);
+  await assert.rejects(api('/runtime/turns/resume', { ...recoverable, confirm: true }));
+  await api('/runtime/enable', { enabled: true });
+  await api('/runtime/turns/resume', { ...recoverable, confirm: true });
+  await assert.rejects(api('/runtime/turns/resume', { ...recoverable, confirm: true }));
+  const doneDeadline = Date.now() + 20000;
+  while ((await api('/runtime/turns')).summary.pending && Date.now() < doneDeadline) await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal((await api('/runtime/turns')).summary.pending, 0, logs);
+  assert.equal((await api('/runtime/turns')).summary.needsReview, 0, logs);
+  const memory = JSON.parse(readFileSync(join(data, 'memory/bowxt_1@chatroom.json')));
+  assert.equal(memory.msgs.filter(m => m.id === 'bowxt:12').length, 1);
+  await api('/runtime/enable', { enabled: false });
 });
 
 test('model errors do not leak provider response bodies or keys', async () => {

@@ -1783,6 +1783,10 @@ const namesFile = join(dirname(memoryDir), 'members.json')
     if (config.rooms.length && !config.rooms.includes(m.roomId)) return
     if (m.typeName === 'sys') return
 
+    enqueuePending(r, m)
+  }
+
+  function enqueuePending(r, m) {
     // 合并连发：2.2s 内的多条消息一起评估，避免"每条都回"
     ctx.standaloneLifecycle?.queued(m)
     r.pending.push(m)
@@ -1795,6 +1799,18 @@ const namesFile = join(dirname(memoryDir), 'members.json')
         if (batch.length) void evaluate(r, batch).catch((e) => log('评估异常：' + String(e?.message || e)))
       }, config.debounceMs))
     }
+  }
+
+  if (ctx.standaloneLifecycle) ctx.resumeStandaloneQueued = async (m) => {
+    const r = roomState(m.roomId, m.roomName)
+    if (!r.msgs.some(message => message.id === m.id)) push(r, m)
+    r.seenIds.add(m.id)
+    if (stopped || !config.enabled || (config.rooms.length && !config.rooms.includes(m.roomId))) {
+      ctx.standaloneLifecycle.ignore(m, "recovery_disabled")
+      return
+    }
+    r.policy.noteOther()
+    enqueuePending(r, m)
   }
 
   // ── 长期记忆（本地保存，每次对话都带上）──────────────────────
