@@ -624,12 +624,16 @@ const BUILD_VER = '2026-10-23.4'   // 抬版本：让新实例压过热重载残
       const tmp = CONFIG_FILE + '.tmp'
       writeFileSync(tmp, JSON.stringify(dump, null, 1), 'utf8')
       renameSync(tmp, CONFIG_FILE)
-    } catch (e) { log('配置持久化失败：' + String(e?.message || e).slice(0, 120)) }
+      return true
+    } catch (e) { log('配置持久化失败：' + String(e?.message || e).slice(0, 120)); return false }
   }
+
+  if (ctx.standaloneLifecycle) ctx.standaloneEffectiveConfig = keys => Object.fromEntries(keys.map(key => [key, config[key]]))
 
   function normalizeConfigValue(key, raw) {
     if (!(key in DEFAULT_CONFIG)) throw new Error('未知参数：' + key)
     const cur = DEFAULT_CONFIG[key]
+    if (ctx.standaloneLifecycle && ['humanSilence', 'humanPunctStyle', 'humanFiller'].includes(key) && typeof raw !== 'boolean') throw new Error('需要布尔值')
     let v
     if (typeof cur === 'number') {
       v = Number(raw)
@@ -664,6 +668,8 @@ const BUILD_VER = '2026-10-23.4'   // 抬版本：让新实例压过热重载残
         }
       }
     }
+    if (key === 'quietAllow' && v.some(value => !['at', 'name'].includes(value))) throw new Error('安静时段例外只支持 at 或 name')
+    if (ctx.standaloneLifecycle && ['maxReplyChars', 'backfillLimit', 'contextMessages'].includes(key) && !Number.isInteger(v)) throw new Error('需要整数')
     return v
   }
 
@@ -987,6 +993,7 @@ const BUILD_VER = '2026-10-23.4'   // 抬版本：让新实例压过热重载残
     if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
       return { ok: false, applied, rejected: [{ key: '*', reason: 'patch 必须是对象' }], warnings }
     }
+    const beforeConfig = { ...config }
     const next = {}
     for (const [k, raw] of Object.entries(patch)) {
       try { next[k] = normalizeConfigValue(k, raw) } catch (e) { rejected.push({ key: k, reason: String(e?.message || e) }) }
@@ -1037,7 +1044,11 @@ const BUILD_VER = '2026-10-23.4'   // 抬版本：让新实例压过热重载残
       } catch (e) { log('朋友圈重新排期失败：' + String(e?.message || e)) }
     }
     if (applied.length) {
-      persistConfig()
+      if (!persistConfig() && ctx.standaloneLifecycle) {
+        Object.assign(config, beforeConfig)
+        quietWindows.splice(0, quietWindows.length, ...parseQuietWindows(config.quietHours))
+        return { ok: false, applied: [], rejected: [{ key: '*', reason: '配置保存失败，修改未生效' }], warnings }
+      }
       log('配置变更：' + applied.map((x) => x.key + '=' + JSON.stringify(x.value)).join('，'))
     }
     return { ok: true, applied, rejected, warnings }
@@ -1299,8 +1310,10 @@ const namesFile = join(dirname(memoryDir), 'members.json')
     void (async () => {
       try {
         if (r.msgs.length) return
+        const seedLimit = ctx.standaloneLifecycle ? Number(config.backfillLimit) : (Number(config.contextSeed) || 20)
+        if (!seedLimit) return
         const res = await client.call('searchMessages',
-          { roomId, query: '', limit: Number(config.contextSeed) || 20 }, 25_000)
+          { roomId, query: '', limit: seedLimit }, 25_000)
         const items = (res?.items || []).slice().reverse()   // 数据库给的是倒序
         if (!items.length) return
         for (const it of items) {
@@ -1604,6 +1617,7 @@ const namesFile = join(dirname(memoryDir), 'members.json')
     }
 
     if (m.isSelf) {
+      ctx.standaloneLifecycle?.ignore(m, 'self_message')
       r.policy.noteSelf()
       push(r, m)
       return
@@ -1778,7 +1792,7 @@ const namesFile = join(dirname(memoryDir), 'members.json')
     // ★ 群聊事件触发朋友圈：有人说话就安排一次"安静后评估"（防抖/冷却/额度都在内部判）
     try { scheduleChatMomentEval(r) } catch (e) { log('朋友圈事件调度异常：' + String(e?.message || e)) }
 
-    if (!config.enabled) return
+    if (!config.enabled) { ctx.standaloneLifecycle?.ignore(m, 'disabled'); return }
     if (!m.isGroup && !config.allowPrivate) return
     if (config.rooms.length && !config.rooms.includes(m.roomId)) return
     if (m.typeName === 'sys') return
@@ -3436,13 +3450,14 @@ ${cur.text}`
   }
 
   async function evaluateCore(r, batch) {
-    if (stopped) return
+    if (stopped) { ctx.standaloneLifecycle?.skip('stopped'); return }
     const trigger = batch[batch.length - 1]
     // 能回的类型：文本 / 应用卡片 / 链接卡片（type 42/49：链接视频失败时降级成普通文本）/
     // 已识别出内容的图片与表情包
     const okType = ['text', 'app', 'link', 'card'].includes(trigger.typeName)
       || (['image', 'emoticon', 'video'].includes(trigger.typeName) && (trigger.imageDesc || trigger.videoAudio))
     if (!okType) {
+      ctx.standaloneLifecycle?.skip('unsupported_type')
       stats.skipped++
       return
     }
@@ -3483,6 +3498,7 @@ ${cur.text}`
     try {
       if (isSleepy(r) && !['at', 'name'].includes(String(priority || ''))) {
         stats.skipped++
+        ctx.standaloneLifecycle?.skip('sleepy')
         log(`困了（精力低静默期，还剩 ${Math.round((r.__sleepyUntil - Date.now()) / 60000)} 分钟）→ 这条不回`)
         return
       }
@@ -3493,9 +3509,9 @@ ${cur.text}`
       // 闲聊概率没命中 → **不再直接跳过**，继续交给模型判断
       // （用户要求：不必每句都回，但每句都要看，由它理解后决定）
       // 只有硬性原因才真跳过：频率上限 / 冷却中 / 刚连续自言自语 / 低信息量 / 重复
-      const hardBlock = /上限|冷却|连续发言|低信息|太短|重复|刷屏/.test(String(d.reason || ''))
+      const hardBlock = (ctx.standaloneLifecycle && quiet && String(d.reason || '').startsWith('睡觉时段')) || /上限|冷却|连续发言|低信息|太短|重复|刷屏/.test(String(d.reason || ''))
       if (hardBlock) {
-        ctx.standaloneLifecycle?.skip('policy_blocked')
+        ctx.standaloneLifecycle?.skip(quiet && String(d.reason || '').startsWith('睡觉时段') ? 'quiet_hours' : 'policy_blocked')
         stats.skipped++
         log(`不回（${d.reason}）｜${r.roomName}｜${trigger.senderName}: ${trigger.text}`)
         return
@@ -3511,12 +3527,14 @@ ${cur.text}`
     const answeredAt = r.answered?.get(norm)
     if (norm && answeredAt && Date.now() - answeredAt < config.repeatWindowMs) {
       stats.skipped++
+      ctx.standaloneLifecycle?.skip('repeat_question')
       log(`不回（这句 ${Math.round((Date.now() - answeredAt) / 1000)}s 前已经回过，不重复答）`)
       return
     }
 
     if (config.dryRun) {
       stats.replied++
+      ctx.standaloneLifecycle?.skip('dry_run')
       log('dryRun：只决策不发送')
       return
     }
@@ -4049,7 +4067,7 @@ ${cur.text}`
       if (m.typeName === 'app') return '[链接/卡片]'
       return sanitizeText(m.text)
     }
-    const lines = r.msgs.slice(-config.contextMessages).map((m) => `${m.isSelf ? '我' : m.senderName}: ${showText(m)}`)
+    const lines = (config.contextMessages > 0 ? r.msgs.slice(-config.contextMessages) : []).map((m) => `${m.isSelf ? '我' : m.senderName}: ${showText(m)}`)
     // ★ 时间观念：完整日期 + 星期 + 时段（不再只给 HH:MM）
     const now = new Date()
     const ti = nowInfo(now.getTime())
@@ -4832,7 +4850,7 @@ ${cur.text}`
   async function generateReply(r, batch, trigger, priority) {
     const route = resolveRoute()
     stats.llmCalls++
-    const systemText = buildSystem(r)
+    const systemText = buildSystem(r) + (ctx.standaloneIdentityDescription?.(r.roomId) || '')
     // 长记忆检索：提起以前的事就翻数据库，结果并进这次提示词（不额外调模型）
     trigger.historyHits = await lookupHistory(r, trigger)
     const userText = buildUser(r, batch, trigger, priority)
@@ -5225,7 +5243,7 @@ ${cur.text}`
       try {
         if (!String(r.roomId || '').endsWith('@chatroom')) continue
         const res = await client.call('searchMessages',
-          { roomId: r.roomId, query: '', limit: Number(config.backfillLimit) || 10 }, 25_000)
+          { roomId: r.roomId, query: '', limit: ctx.standaloneLifecycle ? Number(config.backfillLimit) : (Number(config.backfillLimit) || 10) }, 25_000)
         const items = (res?.items || []).slice().reverse()   // 数据库给的是倒序
         if (!items.length) continue
         const have = new Set(r.msgs.map((m) => String(m.ts) + '|' + String(m.text)))
@@ -5595,6 +5613,7 @@ ${cur.text}`
         // 用户反馈"回复慢"时靠它定位是哪一段拖的
         if (r.pendingAt) log(`打字中… ${Math.round(delay / 1000)}s 后发送（${parts.length} 条）｜累计 ${((Date.now() - r.pendingAt) / 1000).toFixed(1)}s（防抖+生成）`)
         else log(`打字中… ${Math.round(delay / 1000)}s 后发送（${parts.length} 条）`)
+        ctx.standaloneLifecycle?.phase('typing')
         await sleep(delay)
       }
       for (let i = 0; i < parts.length; i++) {
@@ -5604,6 +5623,7 @@ ${cur.text}`
           // ⚠️ 索引可能还没建好（成员同步是异步的）→ 这里**先确保一次**（带节流，不会每次都打桥）
           if (config.allowAt && parts[i].includes('@')) await ensureAtIndex(r)
           const mm = resolveMentions(r, parts[i])
+          ctx.standaloneLifecycle?.phase('sending')
           await getOutbox().enqueue({
             roomId, kind: 'sendText',
             args: { roomId, text: mm.text, ...(mm.mentions.length ? { mentions: mm.mentions } : {}) },
@@ -5640,7 +5660,7 @@ ${cur.text}`
           log('发送失败：' + String(e?.message || e))
           return
         }
-        if (i < parts.length - 1) await sleep(gapMs())
+        if (i < parts.length - 1) { ctx.standaloneLifecycle?.phase('part_gap'); await sleep(gapMs()) }
       }
       // ── [稍后:N]：到点真的回来补一条（答应的事有下文）──
       if (reply.later > 0 && parts.length) {

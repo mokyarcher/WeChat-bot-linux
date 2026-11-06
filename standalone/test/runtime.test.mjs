@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, readFileSync, rmdirSync } from 'node:fs';
+import { displayIdentity } from '../identities.mjs';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { normalizeMessage } from '../bowxt.mjs';
@@ -238,6 +239,51 @@ test('original persona and memory survive standalone startup and restart', { tim
   assert.equal((await api('/runtime/turns')).summary.needsReview, 0, logs);
   const memory = JSON.parse(readFileSync(join(data, 'memory/bowxt_1@chatroom.json')));
   assert.equal(memory.msgs.filter(m => m.id === 'bowxt:12').length, 1);
+  await api('/runtime/enable', { enabled: false });
+  const textPatch = { quietHours: '00:00-12:00,12:00-23:59,23:59-00:00', quietAllow: [],
+    humanSilence: false, humanPunctStyle: true, humanFiller: false, maxReplyChars: 24, contextMessages: 0, backfillLimit: 0, debounceMs: 0 };
+  await api('/wechat-bot/api/config', { patch: textPatch });
+  for (const patch of [{ quietAllow: ['unknown'] }, { humanSilence: 'wrong' }, { maxReplyChars: 1.5 }]) {
+    await assert.rejects(api('/wechat-bot/api/config', { patch }));
+  }
+  const block = join(data, 'wechat-bot/config.json.tmp'); mkdirSync(block);
+  await assert.rejects(api('/wechat-bot/api/config', { patch: { maxReplyChars: 25 } })); rmdirSync(block);
+  assert.equal((await api('/runtime/text-config')).values.maxReplyChars, 24);
+  await stop(); await start();
+  const effective = await api('/runtime/text-config');
+  for (const [key, value] of Object.entries(textPatch)) assert.deepEqual(effective.values[key], value, key);
+  assert.equal(effective.dependencies.humanFillerActive, false);
+  await api('/runtime/enable', { enabled: true });
+  const sendCount = sends.length, modelCount = prompts.length;
+  const waitForRound = async seq => {
+    const until = Date.now() + 5000;
+    while (Date.now() < until) {
+      const row = (await api('/runtime/turns/recent')).items.find(r => r.id === 'bowxt:' + seq && !r.ongoing);
+      if (row) return row;
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    assert.fail('round did not finish: ' + seq + logs);
+  };
+  delivery = { ...receipt, message: { ...receipt.message, seq: 30 } };
+  const quietRound = await waitForRound(30);
+  assert.equal(quietRound.reason, 'quiet_hours');
+  assert.equal(sends.length, sendCount); assert.equal(prompts.length, modelCount);
+  assert.ok(quietRound.timingAvailable);
+  const plan = await api('/runtime/identities/preview', { action: 'link', alias: '改名后的测试人', target: '测试人' });
+  await assert.rejects(api('/runtime/identities/commit', { ...plan, confirm: true }));
+  await api('/runtime/enable', { enabled: false });
+  await api('/runtime/identities/commit', { ...plan, confirm: true });
+  const personaBeforeRename = JSON.parse(readFileSync(join(data, 'persona/bowxt_1@chatroom.json')));
+  assert.ok(Object.hasOwn(personaBeforeRename.affinity, displayIdentity(1, '测试人')));
+  await stop(); await start();
+  assert.equal((await api('/runtime/identities')).links[0].target, '测试人');
+  await api('/runtime/enable', { enabled: true });
+  delivery = { ...receipt, message: { ...receipt.message, seq: 31, sender: '改名后的测试人' } };
+  assert.equal((await waitForRound(31)).reason, 'quiet_hours');
+  const personaAfterRename = JSON.parse(readFileSync(join(data, 'persona/bowxt_1@chatroom.json')));
+  assert.ok(Object.hasOwn(personaAfterRename.affinity, displayIdentity(1, '测试人')));
+  assert.ok(!Object.hasOwn(personaAfterRename.affinity, displayIdentity(1, '改名后的测试人')));
+  assert.equal(sends.length, sendCount); assert.equal(prompts.length, modelCount);
   await api('/runtime/enable', { enabled: false });
 });
 

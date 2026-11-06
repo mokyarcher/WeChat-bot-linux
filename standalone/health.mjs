@@ -12,6 +12,7 @@ export function buildLinuxHealth(snapshot, bridge, model, now = Date.now()) {
     add('消息扫描', paused ? 'warn' : !Number.isFinite(age) || age > 60 ? 'bad' : 'ok', paused ? '接入或消费已暂停' : Number.isFinite(age) ? `最近成功扫描 ${Math.max(0, Math.round(age))} 秒前；无新消息不代表故障` : '尚无成功扫描记录');
     if (state.last_error) add('接入错误', 'bad', state.last_error);
   }
+  if (bridge.identityStoreFault) add('成员映射', 'bad', '成员映射存储异常，消息消费已停止', '保持暂停并检查数据目录，不清空映射文件');
   add('模型配置', model.hasKey ? 'ok' : 'warn', model.hasKey ? '密钥已配置；本次未调用模型验证' : '尚未配置模型密钥');
   if (bridge.turns) add('业务轮次', bridge.turns.fault ? 'bad' : bridge.turns.needsReview ? 'warn' : 'ok',
     bridge.turns.fault ? '轮次存储异常，消费已停止' : `处理中/待处理 ${bridge.turns.pending}；待核查 ${bridge.turns.needsReview}`,

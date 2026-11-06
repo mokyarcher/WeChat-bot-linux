@@ -560,6 +560,7 @@ function renderActive(opts) {
     // 模型页要先把 DSH 的模型清单拉回来，下拉框才能填上
     if (nav.special === 'model') { void renderModelPage(); return; }
     renderParams(nav);
+    if (App.S.platform === 'linux' && ['reply', 'style'].includes(nav.id)) void renderLinuxTextAudit();
     if (nav.special === 'stickers') renderStickerExtra();
     if (nav.special === 'memory') renderMemoryExtra();
     if (nav.special === 'members') renderMembersExtra();
@@ -2011,6 +2012,7 @@ async function renderMembersExtra() {
     const j = await api('/action', { method: 'POST', body: JSON.stringify({ op: 'rooms' }) });
     box.innerHTML = `<div class="section"><div class="hd">当前 Linux 监听范围</div>${(j.result || []).map(r => `<p><b>${esc(r.name)}</b> <span class="mono">${esc(r.roomId)}</span></p>`).join('')}<p class="muted">仅维护当前指定群，不新增群、不修改微信里的群名。内部 ID 与记忆保留。保存后保持暂停，请检查桌面后到首页启用；保存失败不会自动恢复发送。</p><input id="linux-room-name" maxlength="128" placeholder="微信里修改后的完整群名"><button id="linux-room-save" class="btn">暂停并保存监听名称</button><button id="linux-room-rollback" class="btn">恢复上一次监听名称</button><p id="linux-room-result" class="muted"></p><p><a href="/desktop/" target="_blank" rel="noopener">查看远程微信桌面</a> · <a href="/" target="_blank" rel="noopener">启停设置</a></p></div>`;
     const binding = await fetch('/runtime/room').then(r => r.json());
+    await renderLinuxIdentities(box);
     $('#linux-room-name').value = binding.name;
     $('#linux-room-rollback').disabled = !binding.previousName || binding.previousName === binding.name;
     const change = async name => {
@@ -2375,6 +2377,22 @@ async function renderLinuxOps() {
     };
     storageBox.append(title, note, desc, archive);
   };
+  const recentBox = document.createElement('div'); recentBox.className = 'section'; view.appendChild(recentBox);
+  const refreshRecent = async () => {
+    const r = await fetch('/runtime/turns/recent'); const result = await r.json(); if (!r.ok) throw new Error(result.error || '轮次过程读取失败');
+    if (!recentBox.isConnected) return; recentBox.replaceChildren();
+    const title = document.createElement('div'); title.className = 'hd'; title.textContent = '最近 50 条消息的处理过程'; recentBox.appendChild(title);
+    const note = document.createElement('p'); note.className = 'muted'; note.textContent = '同一批合并消息共享处理过程；总耗时含合并、模型及发送等待，不是纯模型耗时。旧记录不补造耗时，中断区间无法确定；刷新查看进行中的任务。'; recentBox.appendChild(note);
+    const names = { received: '接收与入站', debounce: '合并等待', decision: '回复判断', generating: '模型与检索', typing: '模拟打字', sending: '排队与发送确认', send_confirmed: '发送已确认', part_gap: '拆句间隔', finished: '业务结束', interrupted: '进程中断', recovery_dispatch: '续处理', skipped: '跳过', completed: '完成', needs_review: '待核查', queued: '已入队', processing: '处理中', silence: '情境沉默', sleepy: '低精力静默', repeat_question: '重复问题', quiet_hours: '安静时段', policy_blocked: '频率/低信息等策略限制', no_reply: '模型选择不回复或无可用正文', disabled: '总回复开关未启用', self_message: '自身消息', not_queued: '未进入回复队列', reply_confirmed: '回复已确认', generation_failed: '生成失败', model_failed: '模型失败', send_unconfirmed: '发送未确认', delivery_failed: '投递失败', processing_failed: '处理失败', memory_write_failed: '记忆保存失败', unsupported_type: '未支持类型', dry_run: '仅演练', in_progress: '处理中', stopped: '服务收尾' };
+    for (const item of result.items) {
+      const row = document.createElement('details'); const summary = document.createElement('summary');
+      summary.textContent = item.id + ' · ' + new Date(item.receivedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) + ' · ' + (names[item.state] || item.state) + ' · ' + (names[item.reason] || '需结合业务日志核查') + ' · ' + (item.totalMs == null ? '完整耗时不可确定' : (item.totalMs / 1000).toFixed(3) + ' 秒') + (item.ongoing ? '（尚未结束）' : '');
+      const detail = document.createElement('p'); detail.className = 'muted'; detail.style.whiteSpace = 'pre-wrap';
+      detail.textContent = item.timingAvailable ? item.segments.map(part => (names[part.stage] || '异常/其他阶段') + '：' + (part.ms == null ? '中断区间不可确定' : (part.ms / 1000).toFixed(3) + ' 秒')).join('\n') : '该旧记录未采集完整阶段数据。';
+      if (item.batchId) detail.textContent += '\n合并批次：' + item.batchId.slice(0, 12);
+      row.append(summary, detail); recentBox.appendChild(row);
+    }
+  };
   const refreshTurns = async () => {
     const response = await fetch('/runtime/turns'); const result = await response.json();
     if (!response.ok) throw new Error(result.error || '轮次读取失败');
@@ -2440,6 +2458,7 @@ async function renderLinuxOps() {
       $('#linux-ops-timing').textContent = timing ? Object.entries(labels).filter(([key]) => Number.isFinite(timing[key])).map(([key, label]) => label + '：' + timing[key].toFixed(3) + ' 秒').join('\n') : '暂无已记录发送耗时。';
       await refreshTurns();
       await refreshStorage();
+      await refreshRecent();
       renderHeader();
     } catch (e) { if ($('#linux-ops-health')) $('#linux-ops-health').textContent = '诊断失败：' + e.message; }
     finally { if (button.isConnected) button.disabled = false; }
@@ -4124,6 +4143,74 @@ refresh();
 try { renderOpsBanner() } catch (e) { /* 横幅失败不影响面板 */ }
 setInterval(() => refresh({ lite:true }), 10000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh({ lite:true }); });
+
+async function renderLinuxTextAudit() {
+  const box = document.createElement('div'); box.className = 'section'; view.appendChild(box);
+  const title = document.createElement('div'); title.className = 'hd'; title.textContent = '当前实际配置';
+  const button = document.createElement('button'); button.className = 'btn'; button.textContent = '读取生效值';
+  const result = document.createElement('pre'); result.style.whiteSpace = 'pre-wrap';
+  const load = async () => {
+    button.disabled = true;
+    try {
+      const r = await fetch('/runtime/text-config'); const data = await r.json(); if (!r.ok) throw new Error(data.error || '读取失败');
+      if (!box.isConnected) return;
+      result.textContent = data.scope + '\n口语填充词当前' + (data.dependencies.humanFillerActive ? '生效' : '未生效（需同时开启情绪标点与填充词）') + '\n' + Object.entries(data.values).map(([key, value]) => (App.S.meta?.[key]?.label || key) + '：' + JSON.stringify(value)).join('\n');
+    } catch (error) { result.textContent = '读取失败：' + error.message; }
+    finally { if (button.isConnected) button.disabled = false; }
+  };
+  button.onclick = load; box.append(title, button, result); await load();
+}
+
+async function renderLinuxIdentities(parent) {
+  const request = async (path, body) => {
+    const r = await fetch('/runtime/identities' + path, body === undefined ? {} : { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const data = await r.json(); if (!r.ok) throw new Error(data.error || '成员映射请求失败'); return data;
+  };
+  const box = document.createElement('div'); box.className = 'section'; parent.appendChild(box);
+  const title = document.createElement('div'); title.className = 'hd'; title.textContent = '成员改名与旧关系延续';
+  const note = document.createElement('p'); note.className = 'muted'; note.textContent = '仅当前群，由你确认新旧昵称是同一人。同名成员无法可靠区分，不应绑定。新昵称此后沿用所选旧身份的人格关系；历史原文不改，已经形成的两份关系不自动合并。操作需暂停，完成后保持暂停；解除也只影响后续。';
+  const alias = document.createElement('input'); alias.maxLength = 128; alias.placeholder = '完整新昵称';
+  const target = document.createElement('select');
+  const preview = document.createElement('button'); preview.className = 'btn'; preview.textContent = '预览改名映射';
+  const commit = document.createElement('button'); commit.className = 'btn'; commit.textContent = '确认保存映射'; commit.disabled = true;
+  const detail = document.createElement('p'); detail.className = 'muted';
+  const links = document.createElement('div'); let plan;
+  alias.oninput = target.onchange = () => { plan = undefined; commit.disabled = true; };
+  const refresh = async () => {
+    const data = await request(''); if (!box.isConnected) return;
+    target.replaceChildren();
+    for (const name of data.names) { const option = document.createElement('option'); option.value = name; option.textContent = '沿用旧身份：' + name; target.appendChild(option); }
+    preview.disabled = !data.names.length; links.replaceChildren();
+    for (const link of data.links) {
+      const row = document.createElement('p'); const text = document.createElement('span'); text.textContent = link.alias + ' → ' + link.target;
+      const remove = document.createElement('button'); remove.className = 'btn'; remove.textContent = '预览解除';
+      remove.onclick = async () => {
+        remove.disabled = true;
+        try {
+          const change = await request('/preview', { action: 'unlink', alias: link.alias });
+          if (!confirm('解除「' + change.alias + '」的映射？先暂停；只影响之后的消息，不撤销期间的人格或记忆变化。')) return;
+          await request('/commit', { ...change, confirm: true }); detail.textContent = '已解除，保持暂停。'; await refresh();
+        } catch (error) { detail.textContent = '解除失败：' + error.message; }
+        finally { if (remove.isConnected) remove.disabled = false; }
+      };
+      row.append(text, remove); links.appendChild(row);
+    }
+  };
+  preview.onclick = async () => {
+    preview.disabled = true; commit.disabled = true;
+    try { plan = await request('/preview', { action: 'link', alias: alias.value, target: target.value }); detail.textContent = '新昵称「' + plan.alias + '」将沿用「' + plan.target + '」的身份。' + (plan.sourceAlreadySeen ? '新昵称已有接入记录，已有独立关系会保留，不自动合并。' : '') + plan.scope; commit.disabled = false; }
+    catch (error) { plan = undefined; detail.textContent = '预览失败：' + error.message; }
+    finally { if (preview.isConnected) preview.disabled = false; }
+  };
+  commit.onclick = async () => {
+    if (!plan || !confirm('确认新旧昵称确为同一人？先暂停机器人；只影响后续，不改写历史。')) return;
+    commit.disabled = true;
+    try { await request('/commit', { ...plan, confirm: true }); plan = undefined; detail.textContent = '映射已保存，机器人保持暂停；检查后再启用。'; await refresh(); }
+    catch (error) { detail.textContent = '保存失败：' + error.message; }
+  };
+  box.append(title, note, alias, target, preview, commit, detail, links);
+  try { await refresh(); } catch (error) { detail.textContent = '读取失败：' + error.message; }
+}
 </script>
 </div>
 </body>

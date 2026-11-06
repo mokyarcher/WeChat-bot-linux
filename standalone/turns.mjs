@@ -44,13 +44,18 @@ export function createTurnJournal(dataDir, roomId) {
       || !['received', 'queued', 'processing', ...terminal].includes(record.state)) throw new Error('轮次记录格式或群范围不符，拒绝启动');
     if (validArchive(record)) { archived++; continue; }
     records.set(record.id, record);
-    if (!terminal.has(record.state)) save({ ...record, interruptedState: record.state, state: 'needs_review', reason: 'interrupted', updatedAt: Date.now() });
+    if (!terminal.has(record.state)) save({ ...record, interruptedState: record.state, state: 'needs_review', reason: 'interrupted', updatedAt: Date.now(), events: record.events ? [...record.events, { stage: 'interrupted', at: Date.now() }].slice(-40) : undefined });
   }
   const change = (ids, patch) => {
     for (const id of ids) {
       const record = records.get(id);
       if (!record) throw new Error('轮次尚未持久化');
-      save({ ...record, ...patch, updatedAt: Date.now() });
+      const now = Date.now();
+      const events = [...(record.events || [])];
+      const stage = patch.phase || patch.state;
+      if (stage && events.at(-1)?.stage !== stage) events.push({ stage, at: now });
+      const finishedAt = terminal.has(patch.state) && !record.finishedAt ? now : record.finishedAt;
+      save({ ...record, ...patch, ...(stage ? { events: events.slice(-40) } : {}), finishedAt, updatedAt: now });
     }
   };
   const inScope = () => scope.getStore();
@@ -71,7 +76,7 @@ export function createTurnJournal(dataDir, roomId) {
           return false;
         } catch { fault = true; throw new Error('轮次去重记录异常，停止消费'); }
       }
-      save({ version: 1, id: message.id, roomId, message, state: 'received', receivedAt: Date.now(), updatedAt: Date.now() });
+      save({ version: 1, id: message.id, roomId, message, state: 'received', receivedAt: Date.now(), updatedAt: Date.now(), events: [{ stage: 'received', at: Date.now() }] });
       return true;
     },
     async ingest(message, fn) {
@@ -131,6 +136,19 @@ export function createTurnJournal(dataDir, roomId) {
       const counts = {};
       for (const record of records.values()) counts[record.state] = (counts[record.state] || 0) + 1;
       return { active, pending: (counts.received || 0) + (counts.queued || 0) + (counts.processing || 0), needsReview: counts.needs_review || 0, fault, archived, counts };
+    },
+    recent() {
+      const now = Date.now();
+      return [...records.values()].sort((a, b) => b.receivedAt - a.receivedAt).slice(0, 50).map(r => {
+        const finished = terminal.has(r.state), end = finished ? (r.finishedAt || r.updatedAt) : now;
+        const events = r.events || [];
+        return { id: r.id, batchId: r.batchId, receivedAt: r.receivedAt, state: r.state, phase: r.phase,
+          reason: r.failureStage || r.reason || (finished ? '' : 'in_progress'),
+          totalMs: events[0]?.stage === 'received' && !r.interruptedState ? Math.max(0, end - r.receivedAt) : null,
+          timingAvailable: events[0]?.stage === 'received', includesInterruption: !!r.interruptedState,
+          segments: events.map((event, i) => ({ stage: event.stage, at: event.at,
+            ms: event.stage === 'interrupted' || events[i + 1]?.stage === 'interrupted' ? null : Math.max(0, (events[i + 1]?.at ?? end) - event.at) })), ongoing: !finished };
+      });
     },
     list() {
       return [...records.values()].filter(r => r.state === 'needs_review').sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 100)

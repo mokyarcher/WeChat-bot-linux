@@ -55,7 +55,7 @@ export function installBridge(BridgeClient, settings) {
     return response.json();
   }
   const status = () => ({ loggedIn: backendConnected, self: 'linux-bot', mock: false, counters,
-    stickers: { count: 0 }, polling, identityScope: 'group-display-name', turns: settings.lifecycle?.summary() });
+    stickers: { count: 0 }, polling, identityScope: 'group-display-name', identityStoreFault: !!settings.identities?.fault(), turns: settings.lifecycle?.summary() });
   async function tick(epoch) {
     if (!polling || epoch !== generation) return;
     if (!clients.size) { timer = setTimeout(() => void tick(epoch), 250); return; }
@@ -75,7 +75,7 @@ export function installBridge(BridgeClient, settings) {
         const message = delivery.message;
         // Refuse unexpected rooms even if the backend ignores the subscription filter.
         if (message.chat_id !== settings.chatId) throw new Error('接入服务返回了非白名单群消息');
-        const normalized = normalizeMessage(message, settings.chatId, settings.roomName);
+        const normalized = settings.identities ? settings.identities.apply(normalizeMessage(message, settings.chatId, settings.roomName), true) : normalizeMessage(message, settings.chatId, settings.roomName);
         if (message.message_type === 'text') {
           // Durable receipt precedes both dispatch and ACK. A repeated claim is ACKed,
           // but never starts a second business task (including after a restart).
@@ -90,7 +90,7 @@ export function installBridge(BridgeClient, settings) {
       }
     } catch (error) {
       failed = true;
-      if (settings.lifecycle?.summary().fault) { polling = false; generation++; }
+      if (settings.lifecycle?.summary().fault || settings.identities?.fault()) { polling = false; generation++; }
       if (!controller.signal.aborted) settings.log('接入轮询：' + error.message);
     } finally {
       if (claimAbort === controller) claimAbort = undefined;
@@ -132,18 +132,21 @@ export function installBridge(BridgeClient, settings) {
     if (op === 'stickers') return { stickers: [], count: 0 };
     if (op === 'pickSticker') return null;
     if (op === 'history' || op === 'searchMessages') {
+      const limit = args.limit === undefined ? 100 : Math.min(100, Number(args.limit));
+      if (!Number.isInteger(limit) || limit < 0) throw new Error('查询条数无效');
+      if (!limit) return op === 'history' ? [] : { items: [] };
       const result = await api(`/api/chats/${settings.chatId}/messages?recent=1&limit=100`);
       const items = (result.messages || [])
         .filter(message => message.message_type === 'text' && ['incoming', 'outgoing'].includes(message.direction))
-        .map(message => normalizeMessage(message, settings.chatId, settings.roomName))
+        .map(message => { const m = normalizeMessage(message, settings.chatId, settings.roomName); return settings.identities ? settings.identities.apply(m) : m; })
         .sort((a, b) => a.seq - b.seq);
       const selected = args.query ? items.filter(item => item.text.includes(args.query)) : items;
       // Upstream searchMessages returns newest first; the plugin reverses it when seeding context.
-      return op === 'history' ? selected : { items: selected.reverse() };
+      return op === 'history' ? selected.slice(-limit) : { items: selected.reverse().slice(0, limit) };
     }
     if (op === 'sendText') {
       try {
-        if (settings.lifecycle?.summary().fault) throw new Error('轮次存储异常，拒绝发送');
+        if (settings.lifecycle?.summary().fault || settings.identities?.fault()) throw new Error('轮次或成员映射存储异常，拒绝发送');
         if (!polling) throw new Error('自动发送尚未启用');
         if (!args.text?.trim()) throw new Error('回复正文为空');
         if (args.requestId && [...requests.values()].some(request => request.requestId === args.requestId
@@ -196,7 +199,7 @@ export function installBridge(BridgeClient, settings) {
       return inspectOutbound(path => api(path, undefined, 'GET', AbortSignal.timeout(5000)), settings.chatId, requestIds, requests);
     },
     messagePage(options) {
-      return readMessagePage(api, settings.chatId, m => normalizeMessage(m, settings.chatId, settings.roomName), options);
+      return readMessagePage(api, settings.chatId, m => { const normalized = normalizeMessage(m, settings.chatId, settings.roomName); return settings.identities ? settings.identities.apply(normalized) : normalized; }, options);
     },
     roomBinding() { return { ...binding, roomId, chatId: settings.chatId }; },
     async renameRoom(expectedName, name) {

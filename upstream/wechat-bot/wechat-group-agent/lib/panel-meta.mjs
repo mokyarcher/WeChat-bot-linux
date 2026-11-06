@@ -199,6 +199,9 @@ export const CONFIG_META = {
   },
 
   // ── 说话方式 ────────────────────────────────────────────────
+  humanSilence: { group: 'reply', label: '情境沉默判断', type: 'bool', help: '按原人格和上下文判断是否适合插话，不替代频率与作息限制。' },
+  humanPunctStyle: { group: 'style', label: '按情绪调整标点与长度', type: 'bool', help: '沿用原业务的情绪标点和长度处理。' },
+  humanFiller: { group: 'style', label: '口语填充词', type: 'bool', help: '原业务低频加入口语碎片，需要启用情绪标点处理才生效。' },
   splitChance: {
     group: 'style', label: '拆成两条发的概率', type: 'number', min: 0, max: 1, step: 0.01,
   },
