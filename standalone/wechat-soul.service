@@ -1,0 +1,31 @@
+[Unit]
+Description=Standalone WeChat persona and memory service
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wechat-bot
+Group=wechat-bot
+WorkingDirectory=/opt/wechat-bot/soul/standalone
+Environment=BOT_ROOT=/opt/wechat-bot/soul
+Environment=BOT_DATA=/opt/wechat-bot/soul-data
+Environment=HOME=/opt/wechat-bot/soul-home
+Environment=PORT=18788
+Environment=TZ=Asia/Shanghai
+Environment=PUBLIC_ORIGIN=https://chat-manage.sharex.team
+Environment=DESKTOP_HEALTHCHECKS=1
+ExecStart=/opt/wechat-bot/runtime/node server.mjs
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/wechat-bot/soul-data /opt/wechat-bot/soul-home
+MemoryMax=384M
+CPUQuota=50%
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,46 @@
+node_modules/
+data/
+logs/
+*.log
+*.tgz
+__pycache__/
+*.pyc
+*.stale
+config.json
+.DS_Store
+version.dll
+*.dll
+启动微信机器人*
+
+# 运行态缓存（会话表→群号映射，本机生成）
+data/table-map.json
+# ── 私有：实现细节不进公库（2026-10-21）──
+docs/cdn-download-re.md
+docs/*-re.md
+bin/
+provider/
+
+# patch 备份（含未打码的原始地址，绝不进仓库）
+patches/*.bak*
+*.bak-before-scrub
+
+# ── 眼睛安装包 / hook DLL（私有，绝不进仓库）2026-10-23 ──
+大肥鱼的眼睛*
+*眼睛*
+version.dll*
+*.dll
+*.zip
+_eyes_upload/
+_eyes_pkg_tmp/
+
+# ── hook 逆向产物（源码补丁 / RVA 生成脚本，绝不进公库）2026-10-23 ──
+patches/*.patch
+scripts/gen-offset-patterns.py
+
+# ── 成品（用户要求：直接把成品放进仓库，克隆即用）2026-10-23 ──
+!release/
+release/version.dll
+!release/install.ps1
+!release/rollback.ps1
+!release/README.txt
+!release/SHA256.txt

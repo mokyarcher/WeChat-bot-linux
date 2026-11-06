@@ -1,0 +1,22 @@
+[Unit]
+Description=WeChat desktop two-factor authentication
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=wechat-auth
+Group=wechat-auth
+ExecStart=/opt/wechat-bot/auth/bin/authelia --config /opt/wechat-bot/auth/configuration.yml
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/wechat-bot/auth
+MemoryMax=256M
+CPUQuota=50%
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
